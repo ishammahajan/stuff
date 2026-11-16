@@ -41,7 +41,7 @@ A personal dashboard of small utilities, built with SvelteKit and Postgres.
 | `pnpm dev`           | Run the dev server.                                  |
 | `pnpm check`         | Type-check the app and the service worker.           |
 | `pnpm build`         | Build for production into `build/`.                  |
-| `pnpm start`         | Run the production build.                            |
+| `pnpm start`         | Apply migrations, then run the production build.     |
 | `pnpm db:generate`   | Generate a SQL migration after changing the schema.  |
 | `pnpm db:migrate`    | Apply pending migrations.                            |
 | `pnpm hash-password` | Hash a login password for `APP_PASSWORD_HASH`.       |
