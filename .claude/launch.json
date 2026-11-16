@@ -1,0 +1,17 @@
+{
+	"version": "0.0.1",
+	"configurations": [
+		{
+			"name": "superapp-production-build",
+			"runtimeExecutable": "env",
+			"runtimeArgs": [
+				"ORIGIN=http://localhost:3000",
+				"PORT=3000",
+				"node",
+				"--env-file=.env",
+				"build"
+			],
+			"port": 3000
+		}
+	]
+}

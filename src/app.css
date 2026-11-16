@@ -1,0 +1,34 @@
+:root {
+	color-scheme: light dark;
+	--bg: light-dark(#f6f6f4, #111214);
+	--surface: light-dark(#ffffff, #1b1d21);
+	--border: light-dark(#dcdcd8, #2c2f36);
+	--text: light-dark(#17181a, #ececec);
+	--muted: light-dark(#6b6d72, #9a9da5);
+	--accent: light-dark(#2f5fe0, #7da2ff);
+	--on-accent: light-dark(#ffffff, #0d1220);
+	--danger: light-dark(#b3261e, #ff8a80);
+}
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+body {
+	margin: 0;
+	background: var(--bg);
+	color: var(--text);
+	font-family:
+		system-ui,
+		-apple-system,
+		sans-serif;
+	line-height: 1.4;
+	-webkit-tap-highlight-color: transparent;
+}
+
+h1 {
+	font-size: 1.5rem;
+	margin: 0 0 1rem;
+}

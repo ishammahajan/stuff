@@ -1,0 +1,15 @@
+# Local development database. Start with `docker compose up -d`.
+services:
+  db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: superapp
+      POSTGRES_PASSWORD: superapp
+      POSTGRES_DB: superapp
+    ports:
+      - '127.0.0.1:5433:5432'
+    volumes:
+      - db-data:/var/lib/postgresql
+
+volumes:
+  db-data:
