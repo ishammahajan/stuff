@@ -46,8 +46,11 @@ A personal dashboard of small utilities, built with SvelteKit and Postgres.
 | `pnpm db:migrate`    | Apply pending migrations.                            |
 | `pnpm hash-password` | Hash a login password for `APP_PASSWORD_HASH`.       |
 
-The production server also needs `ORIGIN` set to the site's URL, for example
-`ORIGIN=https://example.com`, so that form submissions pass the origin check.
+The production server also needs two more variables:
+
+- `ORIGIN`: the site's URL, for example `ORIGIN=https://example.com`, so that form
+  submissions pass the origin check.
+- `BODY_SIZE_LIMIT=10M`: the default limit of 512 kB is too small for voice recordings.
 
 ## How it fits together
 
@@ -56,4 +59,8 @@ The production server also needs `ORIGIN` set to the site's URL, for example
 - `src/lib/server/db/schema.ts` defines the database tables.
 - `src/service-worker/index.ts` caches the app's files and the dashboard page so the
   dashboard opens at once on repeat visits.
+- `src/routes/capture` records a voice memo and uploads it as WAV to `/api/capture`.
+- `src/lib/server/openrouter.ts` sends the recording to Gemini through OpenRouter, which
+  returns a transcript and a list of items (task, note, expense, or income).
+- `src/routes/inbox` lists captures and lets you retry or delete them.
 - `src/routes/+page.svelte` is the dashboard. Add a utility by giving its tile an `href`.

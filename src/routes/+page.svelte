@@ -1,8 +1,8 @@
 <script lang="ts">
 	// Utilities shown on the dashboard. Give a tile an `href` when its utility exists.
 	const tiles: { name: string; description: string; href?: string }[] = [
-		{ name: 'Capture', description: 'Speak a note, task, or expense' },
-		{ name: 'Inbox', description: 'Review what was captured' },
+		{ name: 'Capture', description: 'Speak a note, task, or expense', href: '/capture' },
+		{ name: 'Inbox', description: 'Review what was captured', href: '/inbox' },
 		{ name: 'Tasks', description: 'Things to do' },
 		{ name: 'Knowledge', description: 'Ideas and recommendations' },
 		{ name: 'Budget', description: 'Spending and income' }

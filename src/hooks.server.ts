@@ -8,6 +8,9 @@ export const handle: Handle = async ({ event, resolve }) => {
 
 	// Everything except the login page requires a session.
 	if (!event.locals.authenticated && event.url.pathname !== '/login') {
+		if (event.url.pathname.startsWith('/api/')) {
+			return Response.json({ error: 'Not signed in.' }, { status: 401 });
+		}
 		redirect(303, '/login');
 	}
 
