@@ -10,12 +10,12 @@
 </script>
 
 <svelte:head>
-	<title>Superapp</title>
+	<title>Stuff</title>
 </svelte:head>
 
 <main>
 	<header>
-		<h1>Superapp</h1>
+		<h1>Stuff</h1>
 		<form method="POST" action="/logout">
 			<button type="submit" class="signout">Sign out</button>
 		</form>

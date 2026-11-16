@@ -4,7 +4,7 @@ import { self } from '$app/service-worker';
 
 // One cache per deployment. A cached page references that deployment's hashed
 // files, so pages and files must be dropped together when a new version activates.
-const CACHE = `superapp-${version}`;
+const CACHE = `stuff-${version}`;
 
 const DASHBOARD = '/';
 

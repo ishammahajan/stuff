@@ -1,4 +1,4 @@
-# Superapp
+# Stuff
 
 A personal dashboard of small utilities, built with SvelteKit and Postgres.
 

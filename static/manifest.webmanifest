@@ -1,6 +1,6 @@
 {
-	"name": "Superapp",
-	"short_name": "Superapp",
+	"name": "Stuff",
+	"short_name": "Stuff",
 	"start_url": "/",
 	"display": "standalone",
 	"background_color": "#111214",

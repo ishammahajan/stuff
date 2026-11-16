@@ -2,7 +2,7 @@
 	"version": "0.0.1",
 	"configurations": [
 		{
-			"name": "superapp-production-build",
+			"name": "stuff-production-build",
 			"runtimeExecutable": "env",
 			"runtimeArgs": [
 				"ORIGIN=http://localhost:3000",

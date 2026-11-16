@@ -3,9 +3,9 @@ services:
   db:
     image: postgres:18-alpine
     environment:
-      POSTGRES_USER: superapp
-      POSTGRES_PASSWORD: superapp
-      POSTGRES_DB: superapp
+      POSTGRES_USER: stuff
+      POSTGRES_PASSWORD: stuff
+      POSTGRES_DB: stuff
     ports:
       - '127.0.0.1:5433:5432'
     volumes:
