@@ -1,5 +1,8 @@
-import { and, desc, eq, isNotNull } from 'drizzle-orm';
-import type { CaptureView } from '../items.ts';
+import { randomUUID } from 'node:crypto';
+import { and, desc, eq, isNotNull, isNull } from 'drizzle-orm';
+import type { CaptureStatus, CaptureView, Item } from '../items.ts';
+import type { Account } from './auth.ts';
+import { decrypt, decryptJson, encrypt, encryptJson } from './crypto.ts';
 import { db } from './db/index.ts';
 import { captures } from './db/schema.ts';
 import { interpretAudio } from './openrouter.ts';
@@ -7,19 +10,21 @@ import { interpretAudio } from './openrouter.ts';
 // 16 kHz mono 16-bit WAV is about 32 kB per second, so this allows roughly four minutes.
 export const MAX_AUDIO_BYTES = 8 * 1024 * 1024;
 
-const viewColumns = {
-	id: captures.id,
-	createdAt: captures.createdAt,
-	status: captures.status,
-	transcript: captures.transcript,
-	items: captures.items,
-	error: captures.error
-};
+/** The encrypted part of a capture. */
+interface CaptureBody {
+	// The speaker's local date and time zone, used to resolve "today" or "tomorrow".
+	localDate: string;
+	timeZone: string;
+	transcript: string | null;
+	items: Item[] | null;
+	error: string | null;
+}
 
-type ViewRow = Omit<CaptureView, 'items'> & { items: CaptureView['items'] | null };
+const audioContext = (id: string) => `captures:${id}:audio`;
+const bodyContext = (id: string) => `captures:${id}:body`;
 
-function toView(row: ViewRow): CaptureView {
-	return { ...row, items: row.items ?? [] };
+function ownedBy(account: Account, id: string) {
+	return and(eq(captures.id, id), eq(captures.userId, account.id));
 }
 
 export function isWav(audio: Buffer): boolean {
@@ -31,88 +36,167 @@ export function isWav(audio: Buffer): boolean {
 }
 
 export async function createCapture(
+	account: Account,
 	audio: Buffer,
 	localDate: string,
 	timeZone: string
 ): Promise<string> {
-	const [row] = await db
-		.insert(captures)
-		.values({ audio, localDate, timeZone })
-		.returning({ id: captures.id });
-	return row.id;
+	const id = randomUUID();
+	const body: CaptureBody = { localDate, timeZone, transcript: null, items: null, error: null };
+	await db.insert(captures).values({
+		id,
+		userId: account.id,
+		audio: encrypt(account.key, audio, audioContext(id)),
+		body: encryptJson(account.key, body, bodyContext(id))
+	});
+	return id;
 }
 
-// Captures being processed by this server process, so that a retry cannot start
-// a second model call for a capture that is already in progress.
+// Captures being processed by this server process, so that a retry or a resume
+// can't start a second model call for a capture that is already in progress.
 const inProgress = new Set<string>();
 
 /**
  * Runs the model over a capture's stored audio and records the outcome.
  * The audio is dropped on success and kept on failure, so a failure can be retried.
+ * The account's key is held only for as long as this runs.
  */
-export async function processCapture(id: string): Promise<void> {
+export async function processCapture(account: Account, id: string): Promise<void> {
 	if (inProgress.has(id)) return;
 	inProgress.add(id);
 	try {
-		await interpretCapture(id);
+		await interpretCapture(account, id);
 	} finally {
 		inProgress.delete(id);
 	}
 }
 
 /** Starts processing without waiting for it. Errors are logged, not thrown. */
-export function processInBackground(id: string): void {
-	processCapture(id).catch((error) => console.error(`Capture ${id} failed to process:`, error));
+export function processInBackground(account: Account, id: string): void {
+	processCapture(account, id).catch((error) =>
+		console.error(`Capture ${id} failed to process:`, error)
+	);
 }
 
 /**
- * Restarts processing for captures left pending, for example by a server restart
- * during a model call. Failed captures wait for a retry from the inbox.
+ * Restarts processing for the account's captures left pending, for example by a
+ * server restart during a model call. Runs when the user is back, because only
+ * their session can unlock the key. Failed captures wait for a retry instead.
  */
-export async function resumePendingCaptures(): Promise<void> {
+export async function resumePendingCaptures(account: Account): Promise<void> {
 	const rows = await db
 		.select({ id: captures.id })
 		.from(captures)
-		.where(and(eq(captures.status, 'pending'), isNotNull(captures.audio)));
-	for (const { id } of rows) processInBackground(id);
+		.where(
+			and(
+				eq(captures.userId, account.id),
+				eq(captures.status, 'pending'),
+				isNotNull(captures.audio)
+			)
+		);
+	for (const { id } of rows) processInBackground(account, id);
 }
 
-async function interpretCapture(id: string): Promise<void> {
-	const [capture] = await db.select().from(captures).where(eq(captures.id, id)).limit(1);
-	if (!capture?.audio) return;
+async function interpretCapture(account: Account, id: string): Promise<void> {
+	const [row] = await db
+		.select({ audio: captures.audio, body: captures.body })
+		.from(captures)
+		.where(ownedBy(account, id))
+		.limit(1);
+	if (!row?.audio || !row.body) return;
 
+	const body = decryptJson<CaptureBody>(account.key, row.body, bodyContext(id));
+	const audio = decrypt(account.key, row.audio, audioContext(id));
+
+	let status: CaptureStatus;
+	let result: CaptureBody;
 	try {
-		const result = await interpretAudio(capture.audio, capture.localDate, capture.timeZone);
-		await db
-			.update(captures)
-			.set({
-				status: 'done',
-				transcript: result.transcript,
-				items: result.items,
-				error: null,
-				audio: null
-			})
-			.where(eq(captures.id, id));
+		const { transcript, items } = await interpretAudio(audio, body.localDate, body.timeZone);
+		status = 'done';
+		result = { ...body, transcript, items, error: null };
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		await db.update(captures).set({ status: 'failed', error: message }).where(eq(captures.id, id));
+		status = 'failed';
+		result = { ...body, error: error instanceof Error ? error.message : String(error) };
 	}
+
+	await db
+		.update(captures)
+		.set({
+			status,
+			body: encryptJson(account.key, result, bodyContext(id)),
+			...(status === 'done' ? { audio: null } : {})
+		})
+		.where(ownedBy(account, id));
 }
 
-export async function getCapture(id: string): Promise<CaptureView | null> {
-	const [row] = await db.select(viewColumns).from(captures).where(eq(captures.id, id)).limit(1);
-	return row ? toView(row) : null;
+const viewColumns = {
+	id: captures.id,
+	createdAt: captures.createdAt,
+	status: captures.status,
+	body: captures.body
+};
+
+function toView(
+	account: Account,
+	row: { id: string; createdAt: Date; status: CaptureStatus; body: Buffer | null }
+): CaptureView {
+	const body = row.body ? decryptJson<CaptureBody>(account.key, row.body, bodyContext(row.id)) : null;
+	return {
+		id: row.id,
+		createdAt: row.createdAt,
+		status: row.status,
+		transcript: body?.transcript ?? null,
+		items: body?.items ?? [],
+		error: body?.error ?? null
+	};
 }
 
-export async function listCaptures(limit = 50): Promise<CaptureView[]> {
+export async function getCapture(account: Account, id: string): Promise<CaptureView | null> {
+	const [row] = await db.select(viewColumns).from(captures).where(ownedBy(account, id)).limit(1);
+	return row ? toView(account, row) : null;
+}
+
+export async function listCaptures(account: Account, limit = 50): Promise<CaptureView[]> {
 	const rows = await db
 		.select(viewColumns)
 		.from(captures)
+		.where(eq(captures.userId, account.id))
 		.orderBy(desc(captures.createdAt))
 		.limit(limit);
-	return rows.map(toView);
+	return rows.map((row) => toView(account, row));
 }
 
-export async function deleteCapture(id: string): Promise<void> {
-	await db.delete(captures).where(eq(captures.id, id));
+export async function deleteCapture(account: Account, id: string): Promise<void> {
+	await db.delete(captures).where(ownedBy(account, id));
+}
+
+/**
+ * Gives captures made before accounts existed to this account: encrypts their
+ * plaintext columns into `audio` and `body`, then clears those columns.
+ */
+export async function adoptUnownedCaptures(account: Account): Promise<number> {
+	const rows = await db.select().from(captures).where(isNull(captures.userId));
+	for (const row of rows) {
+		const body: CaptureBody = {
+			localDate: row.localDate ?? row.createdAt.toISOString().slice(0, 10),
+			timeZone: row.timeZone ?? 'UTC',
+			transcript: row.transcript,
+			items: row.items,
+			error: row.error
+		};
+		await db
+			.update(captures)
+			.set({
+				userId: account.id,
+				audio: row.audio ? encrypt(account.key, row.audio, audioContext(row.id)) : null,
+				body: encryptJson(account.key, body, bodyContext(row.id)),
+				localDate: null,
+				timeZone: null,
+				transcript: null,
+				items: null,
+				error: null
+			})
+			.where(and(eq(captures.id, row.id), isNull(captures.userId)));
+	}
+	return rows.length;
 }

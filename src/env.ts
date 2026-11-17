@@ -12,10 +12,6 @@ export const variables = defineEnvVars({
 		schema: required('DATABASE_URL'),
 		description: 'Postgres connection string'
 	},
-	APP_PASSWORD_HASH: {
-		schema: required('APP_PASSWORD_HASH'),
-		description: 'Login password hash, produced by `pnpm hash-password`'
-	},
 	OPENROUTER_API_KEY: {
 		schema: (value) => value || undefined,
 		description: 'OpenRouter API key for voice captures; optional so the app starts without it'

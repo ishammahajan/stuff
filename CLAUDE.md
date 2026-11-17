@@ -27,15 +27,48 @@ committing.
 
 ## Map
 
-### Requests and auth
+### Accounts, sessions, and encryption
 
-- `src/hooks.server.ts`: `handle` requires a session for every path except `/login`.
-  Pages redirect to `/login`, and `/api/*` returns 401 JSON. `init` resumes captures
-  left pending by a restart.
-- `src/lib/server/auth.ts`: single password login (`APP_PASSWORD_HASH`), sessions,
-  and a global failed-login throttle. The cookie holds a random token, and the
-  database stores only its SHA-256.
-- `src/lib/server/password.ts`: scrypt hashing (`salt:key` in hex).
+Each user's data is private to them and encrypted at rest. The rules:
+
+- **Every query on user data filters by `locals.account.id`.** There is no admin
+  view, and no code path reads another user's rows.
+- **Every piece of user content is encrypted** with the account's data key
+  (`locals.account.key`) through `encrypt`/`encryptJson` in
+  `src/lib/server/crypto.ts`. The context string is `<table>:<row id>:<column>`, so
+  IDs are generated in the app (`randomUUID()`) before the insert. Only metadata
+  stays plaintext: IDs, user IDs, timestamps, types, and status.
+- **The server holds a key only while handling that user's request** or a job the
+  request started. Nothing can decrypt a user's data while they are away, so work
+  that needs the key and was interrupted resumes on the user's next request (see
+  `GET /api/capture/{id}` and the inbox load).
+
+The parts:
+
+- `src/lib/server/crypto.ts`: AES-256-GCM, scrypt for passwords and recovery codes,
+  HKDF for session tokens, and recovery code generation. It has no SvelteKit
+  imports, so scripts can use it.
+- `src/lib/server/auth.ts`:
+  - A random data key per user is stored wrapped by the password-derived key
+    (`users.password_key`) and by the recovery-code-derived key
+    (`users.recovery_key`).
+  - Login is by password alone: `signIn` tries the password against every user's
+    wrapped key, which is fine for a handful of accounts. So two accounts can't
+    share a password, and `checkPasswordFree` enforces that at sign-up and
+    recovery. A clash counts as a failed attempt.
+  - Failed attempts are throttled globally (in memory, reset on restart).
+  - Each session row stores the data key wrapped by a key derived from the cookie
+    token. The database keeps only the token's SHA-256.
+- `src/hooks.server.ts`: sets `locals.account` (`{ id, key }`) from the session
+  cookie. Everything except `/login`, `/join/*`, and `/recover` requires it: pages
+  redirect to `/login`, and `/api/*` returns 401 JSON.
+- Sign-up is by invite only. `pnpm invite` (`scripts/invite.ts`) prints a one-time
+  link to `/join/<token>` that is valid for 7 days. The invitee chooses their own
+  password, and then sees their recovery code once. `--owner` makes the new account
+  adopt captures from before accounts existed (`adoptUnownedCaptures`).
+- `/recover` takes a recovery code and a new password, re-wraps the key, and signs
+  the account out everywhere else.
+- `src/lib/PasswordField.svelte` is the password input with a Show/Hide toggle.
 - CSRF protection is SvelteKit's origin check, so production needs `ORIGIN` set.
 
 ### Voice capture pipeline
@@ -43,9 +76,13 @@ committing.
 1. `src/lib/Recorder.svelte` (on the dashboard) records with `MediaRecorder`.
    `src/lib/audio.ts` converts the recording to 16 kHz mono 16-bit WAV.
 2. `POST /api/capture` (`src/routes/api/capture/+server.ts`) validates the upload,
-   stores the audio in `captures.audio`, starts processing, and returns `202 {id}`.
-3. `src/lib/server/captures.ts` processes in the background. It keeps an in-process
-   set of captures in progress, so one capture never gets two model calls.
+   stores the encrypted audio in `captures.audio`, starts processing, and returns
+   `202 {id}`. The local date, time zone, transcript, items, and error live in the
+   encrypted `captures.body` JSON.
+3. `src/lib/server/captures.ts` processes in the background with the account's key.
+   It keeps an in-process set of captures in progress, so one capture never gets
+   two model calls. After a restart, a pending capture resumes when its owner polls
+   it or opens the inbox.
 4. `src/lib/server/openrouter.ts` sends the audio and instructions to
    `google/gemini-3.8-flash` on OpenRouter in a single call, with a strict JSON
    schema. The reply is a transcript plus items.
@@ -57,8 +94,8 @@ committing.
 7. `src/routes/inbox` lists captures, with retry and delete actions.
 
 Item types and the shared shapes live in `src/lib/items.ts`.
-`src/lib/ItemList.svelte` renders items. Items are stored only as JSON on the capture
-for now. No utility tables exist yet.
+`src/lib/ItemList.svelte` renders items. Items are stored only inside the capture's
+encrypted body for now. No utility tables exist yet.
 
 ### Offline and startup speed
 
@@ -74,7 +111,11 @@ to be fresh. Fetch that data from the client instead, as the capture notes do.
 
 ### Data
 
-- `src/lib/server/db/schema.ts` defines the tables: `sessions` and `captures`.
+- `src/lib/server/db/schema.ts` defines the tables: `users`, `invites`, `sessions`,
+  and `captures`. Each encrypted column notes its context string.
+- `captures` still has plaintext columns (`local_date`, `time_zone`, `transcript`,
+  `items`, `error`) from before accounts existed. They are empty once the owner's
+  account has adopted the old captures. Drop them in a later migration.
 - To change the schema, edit `schema.ts`, run `pnpm db:generate`, and commit the SQL
   in `drizzle/`. `pnpm start` applies migrations (`scripts/migrate.ts`) before the
   server starts, locally and on Railway.
@@ -86,7 +127,9 @@ to be fresh. Fetch that data from the client instead, as the capture notes do.
 2. If voice should create its items, add the type to `ITEM_TYPES` and `Item` in
    `src/lib/items.ts`. Then update the JSON schema and the instructions in
    `src/lib/server/openrouter.ts`, and the rendering in `ItemList.svelte`.
-3. Add its tables to `schema.ts`, and generate a migration.
+3. Add its tables to `schema.ts`, and generate a migration. Every table of user
+   data gets a `user_id`, and every content column is encrypted, as described under
+   **Accounts, sessions, and encryption**.
 4. Update this file.
 
 This pattern changes once the decisions below are built.
@@ -95,15 +138,6 @@ This pattern changes once the decisions below are built.
 
 Remove each point from this section as it lands, and describe the result in **Map**.
 
-- **Accounts:** multiple users, each with private data. Login uses a password only
-  (no name field). Every row belongs to a user, and every query is scoped to the
-  signed-in user. There is no admin view of other users' data.
-- **Encryption:** user data is encrypted at rest. Proposed design, not yet approved:
-  a random data key per user, stored wrapped by a key derived from the password and
-  by a one-time recovery code. Each session stores a copy wrapped by a key derived
-  from its cookie token. Content is encrypted with AES-256-GCM; timestamps, types,
-  and status stay readable. Background jobs hold the key in memory only while they
-  run, and a job interrupted by a restart waits for the user's next request.
 - **Data model:** one `records` table shared by all utilities. Each row has a user,
   a type, timestamps, and an encrypted body. A record can be any small document: a
   task, a budget category with its allocation, a transaction that references a
@@ -122,9 +156,8 @@ Remove each point from this section as it lands, and describe the result in **Ma
   detection in the browser. The instructions tell the model to file only what the
   speaker directs at the app and to ignore background speech, such as a TV.
   Recordings with nothing to file are hidden from the recent strip and the inbox.
-- **Order:** accounts and encryption, then the data model, operations, context, and
-  undo, then the capture interface below, then the Tasks, Knowledge, and Budget
-  utilities.
+- **Order:** the data model, operations, context, and undo, then the capture
+  interface below, then the Tasks, Knowledge, and Budget utilities.
 
 ### Capture interface (decided)
 
@@ -170,7 +203,7 @@ Remove each point from this section as it lands, and describe the result in **Ma
   `railway link --project ccfe2f39-cd6b-4928-9337-785d58e155cb --environment production --service web`
   before `railway up`. Otherwise `railway up` creates a new project.
 - Variables on `web`: `DATABASE_URL` (a reference to Postgres), `ORIGIN`,
-  `APP_PASSWORD_HASH`, `OPENROUTER_API_KEY`, and `BODY_SIZE_LIMIT=10M`.
+  `OPENROUTER_API_KEY`, and `BODY_SIZE_LIMIT=10M`.
 - Don't add `railway.json` or `railway.toml`. Railway stops reading them on
   2026-12-01. Railpack detects the `build` and `start` scripts on its own.
 
@@ -180,8 +213,10 @@ Remove each point from this section as it lands, and describe the result in **Ma
   can't create its network (this machine's kernel has had that problem), run a
   throwaway database on the host network instead:
   `docker run -d --rm --name stuff-db-temp --network host -e POSTGRES_USER=stuff -e POSTGRES_PASSWORD=stuff -e POSTGRES_DB=stuff postgres:18-alpine -p 5433 -c listen_addresses=127.0.0.1`
-- `.env` holds `DATABASE_URL`, `APP_PASSWORD_HASH`, and `OPENROUTER_API_KEY`. It
-  is git-ignored. Never print or commit its values.
+- `.env` holds `DATABASE_URL` and `OPENROUTER_API_KEY`. It is git-ignored. Never
+  print or commit its values.
+- Create a local account with `pnpm invite --origin http://localhost:3000` and open
+  the link.
 - To test the production build, run `pnpm build`, then
   `env ORIGIN=http://localhost:3000 PORT=3000 BODY_SIZE_LIMIT=10M node --env-file=.env build`
   (also in `.claude/launch.json`).

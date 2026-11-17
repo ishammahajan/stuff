@@ -8,7 +8,8 @@ import type { RequestHandler } from './$types';
  * the background, and responds with the new capture's ID right away.
  * Poll `GET /api/capture/{id}` to learn the outcome.
  */
-export const POST: RequestHandler = async ({ request }) => {
+export const POST: RequestHandler = async ({ request, locals }) => {
+	const account = locals.account!;
 	const form = await request.formData();
 	const file = form.get('audio');
 	const localDate = form.get('localDate');
@@ -26,7 +27,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	const audio = Buffer.from(await file.arrayBuffer());
 	if (!isWav(audio)) error(400, 'The recording must be a WAV file.');
 
-	const id = await createCapture(audio, localDate, timeZone);
-	processInBackground(id);
+	const id = await createCapture(account, audio, localDate, timeZone);
+	processInBackground(account, id);
 	return json({ id }, { status: 202 });
 };

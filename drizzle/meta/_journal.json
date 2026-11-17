@@ -15,6 +15,13 @@
       "when": 1794854576850,
       "tag": "0001_neat_winter_soldier",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794951947502,
+      "tag": "0002_regular_zarda",
+      "breakpoints": true
     }
   ]
 }

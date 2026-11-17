@@ -1,21 +1,17 @@
 import { redirect } from '@sveltejs/kit';
-import type { Handle, ServerInit } from '@sveltejs/kit/hooks';
-import { isValidSession, SESSION_COOKIE } from '#lib/server/auth.ts';
-import { resumePendingCaptures } from '#lib/server/captures.ts';
+import type { Handle } from '@sveltejs/kit/hooks';
+import { getSessionAccount, SESSION_COOKIE } from '#lib/server/auth.ts';
 
-export const init: ServerInit = () => {
-	// Not awaited, so the first request is not held up by model calls.
-	resumePendingCaptures().catch((error) =>
-		console.error('Could not resume pending captures:', error)
-	);
-};
+function isPublic(pathname: string): boolean {
+	return pathname === '/login' || pathname === '/recover' || pathname.startsWith('/join/');
+}
 
 export const handle: Handle = async ({ event, resolve }) => {
 	const token = event.cookies.get(SESSION_COOKIE);
-	event.locals.authenticated = token ? await isValidSession(token) : false;
+	event.locals.account = token ? await getSessionAccount(token) : null;
 
-	// Everything except the login page requires a session.
-	if (!event.locals.authenticated && event.url.pathname !== '/login') {
+	// Everything except signing in, joining, and recovery requires a session.
+	if (!event.locals.account && !isPublic(event.url.pathname)) {
 		if (event.url.pathname.startsWith('/api/')) {
 			return Response.json({ error: 'Not signed in.' }, { status: 401 });
 		}

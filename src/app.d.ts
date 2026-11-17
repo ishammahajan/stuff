@@ -1,10 +1,13 @@
 // See https://svelte.dev/docs/kit/types#app.d.ts
 // for information about these interfaces
+import type { Account } from '#lib/server/auth.ts';
+
 declare global {
 	namespace App {
 		// interface Error {}
 		interface Locals {
-			authenticated: boolean;
+			/** The signed-in account, with its data key, or null when signed out. */
+			account: Account | null;
 		}
 		// interface PageData {}
 		// interface PageState {}
