@@ -152,6 +152,15 @@ Remove each point from this section as it lands, and describe the result in **Ma
   detection in the browser. The instructions tell the model to file only what the
   speaker directs at the app and to ignore background speech, such as a TV.
   Recordings with nothing to file are hidden from the recent strip and the inbox.
+- **Search:** the search tool starts as a keyword match over the user's decrypted
+  records. Embeddings arrive with the Knowledge utility, for queries such as "give
+  me my startup ideas".
+- **Step 2 scope:** the `records` table, with captured tasks, notes, expenses, and
+  income stored as real records instead of JSON on the capture. Also the model
+  returning operations, the operation log, Undo in the inbox, the per-type prompt
+  snapshot, and the search tool.
+- **Model provider:** stay on OpenRouter. Calling Google directly, so that only
+  Google receives the audio, was considered and rejected on 2026-11-18.
 - **Order:** the data model, operations, context, and undo, then the capture
   interface below, then the Tasks, Knowledge, and Budget utilities.
 
