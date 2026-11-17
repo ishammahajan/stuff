@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
-	import ItemList from '#lib/ItemList.svelte';
+	import OperationList from '#lib/OperationList.svelte';
 	import type { PageProps } from './$types';
 
-	let { data }: PageProps = $props();
+	let { data, form }: PageProps = $props();
 
 	const formatter = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 </script>
@@ -18,6 +18,10 @@
 	</header>
 
 	<h1>Inbox</h1>
+
+	{#if form?.message}
+		<p class="error" role="alert">{form.message}</p>
+	{/if}
 
 	{#if data.captures.length === 0}
 		<p class="muted">Nothing captured yet.</p>
@@ -47,10 +51,8 @@
 				<p class="error">Couldn't be read: {capture.error}</p>
 			{:else if capture.status === 'pending'}
 				<p class="muted">Not processed yet.</p>
-			{:else if capture.items.length > 0}
-				<ItemList items={capture.items} />
 			{:else}
-				<p class="muted">Nothing to file.</p>
+				<OperationList operations={capture.operations} />
 			{/if}
 
 			{#if capture.transcript}

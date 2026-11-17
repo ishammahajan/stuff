@@ -76,25 +76,45 @@ The parts:
    `src/lib/audio.ts` converts the recording to 16 kHz mono 16-bit WAV.
 2. `POST /api/capture` (`src/routes/api/capture/+server.ts`) validates the upload,
    stores the encrypted audio in `captures.audio`, starts processing, and returns
-   `202 {id}`. The local date, time zone, transcript, items, and error live in the
+   `202 {id}`. The local date, time zone, transcript, and error live in the
    encrypted `captures.body` JSON.
 3. `src/lib/server/captures.ts` processes in the background with the account's key.
    It keeps an in-process set of captures in progress, so one capture never gets
    two model calls. After a restart, a pending capture resumes when its owner polls
    it or opens the inbox.
-4. `src/lib/server/openrouter.ts` sends the audio and instructions to
-   `google/gemini-3.8-flash` on OpenRouter in a single call, with a strict JSON
-   schema. The reply is a transcript plus items.
-5. On success the capture becomes `done`, the items are saved, and the audio is
-   deleted. On failure it becomes `failed`, and the audio is kept for a retry.
-6. The dashboard (`src/routes/+page.svelte`) polls `GET /api/capture/{id}` every 2 s
+4. Before the call, all of the user's records are loaded and decrypted
+   (`loadRecords` in `src/lib/server/records.ts`). `snapshot` puts a capped list in
+   the prompt: up to 50 open tasks, and the latest 20 notes, 20 expenses, and 10
+   income records. The prompt says the list is partial.
+5. `src/lib/server/openrouter.ts` sends the audio and instructions to
+   `google/gemini-3.8-flash` on OpenRouter with two tools, in a loop of at most four
+   calls. `search_records` runs `searchRecords`, a keyword match over the decrypted
+   records. `file_memo` ends the loop with the transcript and a list of operations:
+   create, update, complete, or delete by record ID. The last call forces
+   `file_memo`. The instructions tell the model to file only speech meant for the
+   app and to ignore background speech, such as a TV.
+6. On success, one transaction marks the capture `done`, deletes the audio, and
+   applies the operations (`applyOperations`). Operations on an ID the account
+   doesn't own, and a second operation on the same record, are skipped. On failure
+   the capture becomes `failed`, and the audio is kept for a retry.
+7. The dashboard (`src/routes/+page.svelte`) polls `GET /api/capture/{id}` every 2 s
    for the IDs it sent. It keeps those IDs in `localStorage`, so it still reports
-   results after the app is closed and reopened.
-7. `src/routes/inbox` lists captures, with retry and delete actions.
+   results after the app is closed and reopened. A capture that filed nothing shows
+   no notice.
+8. `src/routes/inbox` lists captures with what each one did
+   (`src/lib/OperationList.svelte`), with Undo on each operation, and retry and
+   delete actions on each capture. Captures that filed nothing are hidden.
 
 Item types and the shared shapes live in `src/lib/items.ts`.
-`src/lib/ItemList.svelte` renders items. Items are stored only inside the capture's
-encrypted body for now. No utility tables exist yet.
+
+**Undo:** every applied operation is logged in `operations` with the record's
+encrypted state before and after. `undoOperation` writes the before state back.
+Only the latest change to a record can be undone, so an undo never overwrites a
+later change. Deleting a capture deletes its log, not its records.
+
+**Older captures:** captures filed before records existed kept their items in the
+capture body. `fileLegacyItems` turns those into records when the inbox loads.
+Remove it once every account has opened the inbox.
 
 ### Offline and startup speed
 
@@ -111,7 +131,12 @@ to be fresh. Fetch that data from the client instead, as the capture notes do.
 ### Data
 
 - `src/lib/server/db/schema.ts` defines the tables: `users`, `invites`, `sessions`,
-  and `captures`. Each encrypted column notes its context string.
+  `captures`, `records`, and `operations`. Each encrypted column notes its context
+  string.
+- `records` is shared by all utilities. Each row has a user, a type, timestamps,
+  `completed_at` for tasks, and an encrypted body (`ItemFields`). Totals and
+  searches run in memory after decryption. A utility may get its own table when
+  the shared table doesn't fit, for example for large files.
 - To change the schema, edit `schema.ts`, run `pnpm db:generate`, and commit the SQL
   in `drizzle/`. `pnpm start` applies migrations (`scripts/migrate.ts`) before the
   server starts, locally and on Railway.
@@ -120,49 +145,31 @@ to be fresh. Fetch that data from the client instead, as the capture notes do.
 
 1. Add its route under `src/routes/<name>/` and give its dashboard tile an `href`
    in `src/routes/+page.svelte`.
-2. If voice should create its items, add the type to `ITEM_TYPES` and `Item` in
-   `src/lib/items.ts`. Then update the JSON schema and the instructions in
-   `src/lib/server/openrouter.ts`, and the rendering in `ItemList.svelte`.
-3. Add its tables to `schema.ts`, and generate a migration. Every table of user
-   data gets a `user_id`, and every content column is encrypted, as described under
-   **Accounts, sessions, and encryption**.
+2. Store its items as `records` with a new type: add the type to `ITEM_TYPES` in
+   `src/lib/items.ts`, a snapshot limit in `SNAPSHOT_LIMITS` in
+   `src/lib/server/records.ts`, and its description to the instructions in
+   `src/lib/server/openrouter.ts`. If it needs fields that `ItemFields` lacks, add
+   them there, to the `file_memo` schema, and to `cleanFields`.
+3. Only if the shared table doesn't fit, add a table to `schema.ts` and generate a
+   migration. Every table of user data gets a `user_id`, and every content column
+   is encrypted, as described under **Accounts, sessions, and encryption**.
 4. Update this file.
-
-This pattern changes once the decisions below are built.
 
 ## Decided, not built yet
 
 Remove each point from this section as it lands, and describe the result in **Map**.
 
-- **Data model:** one `records` table shared by all utilities. Each row has a user,
-  a type, timestamps, and an encrypted body. A record can be any small document: a
-  task, a budget category with its allocation, a transaction that references a
-  category by ID, or a statement import. Totals and searches run in memory after
-  decryption. A utility may get its own table when the shared table doesn't fit,
-  for example for large files.
-- **Edits from voice:** the model returns operations (create, update, complete,
-  delete by ID) instead of only new items. Operations are applied in a transaction
-  and logged with the before and after state, so each one can be undone.
-- **Context for the model:** a bounded snapshot in the prompt, plus a search tool.
-  Each utility may add static maps (such as budget categories) and a capped list of
-  active items, or nothing at all. The model is told the snapshot is partial. The
-  input is audio, so there is no text to embed before the call: retrieval happens
-  only through the search tool, backed by embeddings.
-- **Speech meant for the app:** every recording is sent; there is no silence
-  detection in the browser. The instructions tell the model to file only what the
-  speaker directs at the app and to ignore background speech, such as a TV.
-  Recordings with nothing to file are hidden from the recent strip and the inbox.
-- **Search:** the search tool starts as a keyword match over the user's decrypted
-  records. Embeddings arrive with the Knowledge utility, for queries such as "give
-  me my startup ideas".
-- **Step 2 scope:** the `records` table, with captured tasks, notes, expenses, and
-  income stored as real records instead of JSON on the capture. Also the model
-  returning operations, the operation log, Undo in the inbox, the per-type prompt
-  snapshot, and the search tool.
+- **Richer records:** a record can be any small document, such as a budget
+  category with its allocation, a transaction that references a category by ID, or
+  a statement import. Budget may add a static map (its categories) to the snapshot.
+- **Search with embeddings:** embeddings arrive with the Knowledge utility, for
+  queries such as "give me my startup ideas". The input is audio, so there is no
+  text to embed before the call: retrieval happens only through the search tool.
+- **Every recording is sent:** there is no silence detection in the browser.
 - **Model provider:** stay on OpenRouter. Calling Google directly, so that only
   Google receives the audio, was considered and rejected on 2026-11-18.
-- **Order:** the data model, operations, context, and undo, then the capture
-  interface below, then the Tasks, Knowledge, and Budget utilities.
+- **Order:** the capture interface below, then the Tasks, Knowledge, and Budget
+  utilities. Read `~/dev/projects/budgeting` before building Budget.
 
 ### Capture interface (decided)
 

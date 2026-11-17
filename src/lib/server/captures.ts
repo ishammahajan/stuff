@@ -1,11 +1,19 @@
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq, isNotNull } from 'drizzle-orm';
-import type { CaptureStatus, CaptureView, Item } from '../items.ts';
+import { and, desc, eq, exists, isNotNull, ne, or } from 'drizzle-orm';
+import type { CaptureStatus, CaptureView, ItemFields, ItemType, OperationView } from '../items.ts';
 import type { Account } from './auth.ts';
 import { decrypt, decryptJson, encrypt, encryptJson } from './crypto.ts';
 import { db } from './db/index.ts';
-import { captures } from './db/schema.ts';
+import { captures, operations } from './db/schema.ts';
 import { interpretAudio } from './openrouter.ts';
+import {
+	applyOperations,
+	listOperations,
+	loadRecords,
+	searchRecords,
+	snapshot,
+	type ProposedOperation
+} from './records.ts';
 
 // 16 kHz mono 16-bit WAV is about 32 kB per second, so this allows roughly four minutes.
 export const MAX_AUDIO_BYTES = 8 * 1024 * 1024;
@@ -16,8 +24,9 @@ interface CaptureBody {
 	localDate: string;
 	timeZone: string;
 	transcript: string | null;
-	items: Item[] | null;
 	error: string | null;
+	// Items filed before records existed. `fileLegacyItems` turns them into records.
+	items?: ({ type: ItemType } & ItemFields)[] | null;
 }
 
 const audioContext = (id: string) => `captures:${id}:audio`;
@@ -42,7 +51,7 @@ export async function createCapture(
 	timeZone: string
 ): Promise<string> {
 	const id = randomUUID();
-	const body: CaptureBody = { localDate, timeZone, transcript: null, items: null, error: null };
+	const body: CaptureBody = { localDate, timeZone, transcript: null, error: null };
 	await db.insert(captures).values({
 		id,
 		userId: account.id,
@@ -57,7 +66,7 @@ export async function createCapture(
 const inProgress = new Set<string>();
 
 /**
- * Runs the model over a capture's stored audio and records the outcome.
+ * Runs the model over a capture's stored audio and applies the result.
  * The audio is dropped on success and kept on failure, so a failure can be retried.
  * The account's key is held only for as long as this runs.
  */
@@ -97,6 +106,34 @@ export async function resumePendingCaptures(account: Account): Promise<void> {
 	for (const { id } of rows) processInBackground(account, id);
 }
 
+/** Thrown inside a transaction to roll it back when another run already finished. */
+class AlreadyDone extends Error {}
+
+/**
+ * Applies operations and saves the capture's new body in one transaction, unless
+ * the capture is already done.
+ */
+async function finishCapture(
+	account: Account,
+	id: string,
+	body: CaptureBody,
+	proposed: ProposedOperation[]
+): Promise<void> {
+	try {
+		await db.transaction(async (tx) => {
+			const updated = await tx
+				.update(captures)
+				.set({ status: 'done', audio: null, body: encryptJson(account.key, body, bodyContext(id)) })
+				.where(and(ownedBy(account, id), ne(captures.status, 'done')))
+				.returning({ id: captures.id });
+			if (updated.length === 0) throw new AlreadyDone();
+			await applyOperations(tx, account, id, proposed);
+		});
+	} catch (error) {
+		if (!(error instanceof AlreadyDone)) throw error;
+	}
+}
+
 async function interpretCapture(account: Account, id: string): Promise<void> {
 	const [row] = await db
 		.select({ audio: captures.audio, body: captures.body })
@@ -108,25 +145,58 @@ async function interpretCapture(account: Account, id: string): Promise<void> {
 	const body = decryptJson<CaptureBody>(account.key, row.body, bodyContext(id));
 	const audio = decrypt(account.key, row.audio, audioContext(id));
 
-	let status: CaptureStatus;
-	let result: CaptureBody;
+	let result;
 	try {
-		const { transcript, items } = await interpretAudio(audio, body.localDate, body.timeZone);
-		status = 'done';
-		result = { ...body, transcript, items, error: null };
+		const all = await loadRecords(account);
+		result = await interpretAudio(audio, {
+			localDate: body.localDate,
+			timeZone: body.timeZone,
+			snapshot: snapshot(all),
+			search: (query, type) => searchRecords(all, query, type)
+		});
 	} catch (error) {
-		status = 'failed';
-		result = { ...body, error: error instanceof Error ? error.message : String(error) };
+		const failed = { ...body, error: error instanceof Error ? error.message : String(error) };
+		await db
+			.update(captures)
+			.set({ status: 'failed', body: encryptJson(account.key, failed, bodyContext(id)) })
+			.where(ownedBy(account, id));
+		return;
 	}
 
-	await db
-		.update(captures)
-		.set({
-			status,
-			body: encryptJson(account.key, result, bodyContext(id)),
-			...(status === 'done' ? { audio: null } : {})
-		})
-		.where(ownedBy(account, id));
+	await finishCapture(
+		account,
+		id,
+		{ ...body, transcript: result.transcript, error: null },
+		result.operations
+	);
+}
+
+/**
+ * Turns items from captures filed before records existed into records, once.
+ * Runs on the user's request, because only their session can unlock the key.
+ */
+export async function fileLegacyItems(account: Account): Promise<void> {
+	const rows = await db
+		.select({ id: captures.id, body: captures.body })
+		.from(captures)
+		.where(and(eq(captures.userId, account.id), eq(captures.status, 'done')));
+	for (const row of rows) {
+		const body = decryptJson<CaptureBody>(account.key, row.body, bodyContext(row.id));
+		if (!body.items) continue;
+		const { items, ...rest } = body;
+		await db.transaction(async (tx) => {
+			await tx
+				.update(captures)
+				.set({ body: encryptJson(account.key, rest, bodyContext(row.id)) })
+				.where(ownedBy(account, row.id));
+			await applyOperations(
+				tx,
+				account,
+				row.id,
+				items.map(({ type, ...fields }) => ({ action: 'create', type, fields }))
+			);
+		});
+	}
 }
 
 const viewColumns = {
@@ -138,7 +208,8 @@ const viewColumns = {
 
 function toView(
 	account: Account,
-	row: { id: string; createdAt: Date; status: CaptureStatus; body: Buffer }
+	row: { id: string; createdAt: Date; status: CaptureStatus; body: Buffer },
+	operations: OperationView[]
 ): CaptureView {
 	const body = decryptJson<CaptureBody>(account.key, row.body, bodyContext(row.id));
 	return {
@@ -146,24 +217,47 @@ function toView(
 		createdAt: row.createdAt,
 		status: row.status,
 		transcript: body.transcript,
-		items: body.items ?? [],
+		operations,
 		error: body.error
 	};
 }
 
 export async function getCapture(account: Account, id: string): Promise<CaptureView | null> {
 	const [row] = await db.select(viewColumns).from(captures).where(ownedBy(account, id)).limit(1);
-	return row ? toView(account, row) : null;
+	if (!row) return null;
+	const byCapture = await listOperations(account, [row.id]);
+	return toView(account, row, byCapture.get(row.id) ?? []);
 }
 
+/**
+ * Lists the latest captures. A capture that filed nothing, such as a recording of
+ * background speech, is left out.
+ */
 export async function listCaptures(account: Account, limit = 50): Promise<CaptureView[]> {
 	const rows = await db
 		.select(viewColumns)
 		.from(captures)
-		.where(eq(captures.userId, account.id))
+		.where(
+			and(
+				eq(captures.userId, account.id),
+				or(
+					ne(captures.status, 'done'),
+					exists(
+						db
+							.select({ id: operations.id })
+							.from(operations)
+							.where(eq(operations.captureId, captures.id))
+					)
+				)
+			)
+		)
 		.orderBy(desc(captures.createdAt))
 		.limit(limit);
-	return rows.map((row) => toView(account, row));
+	const byCapture = await listOperations(
+		account,
+		rows.map((row) => row.id)
+	);
+	return rows.map((row) => toView(account, row, byCapture.get(row.id) ?? []));
 }
 
 export async function deleteCapture(account: Account, id: string): Promise<void> {

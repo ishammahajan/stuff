@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import Recorder from '#lib/Recorder.svelte';
-	import type { CaptureView } from '#lib/items.ts';
+	import type { CaptureView, OperationKind } from '#lib/items.ts';
 
 	// Utilities shown on the dashboard. Give a tile an `href` when its utility exists.
 	const tiles: { name: string; description: string; href?: string }[] = [
@@ -43,15 +43,22 @@
 		}
 	}
 
-	function describe(capture: CaptureView): Notice {
+	const VERBS: Record<OperationKind, string> = {
+		create: 'Added',
+		update: 'Changed',
+		complete: 'Done',
+		delete: 'Deleted'
+	};
+
+	/** Describes a processed capture, or returns null when it filed nothing. */
+	function describe(capture: CaptureView): Notice | null {
 		if (capture.status === 'failed') {
 			return { id: capture.id, text: "A recording couldn't be read.", failed: true };
 		}
-		const titles = capture.items.map((item) => item.title);
-		const text =
-			titles.length === 0
-				? 'Nothing to file from a recording.'
-				: `Filed ${titles.length} ${titles.length === 1 ? 'item' : 'items'}: ${titles.join(', ')}.`;
+		if (capture.operations.length === 0) return null;
+		const text = capture.operations
+			.map((operation) => `${VERBS[operation.kind]}: ${operation.item.title}.`)
+			.join(' ');
 		return { id: capture.id, text, failed: false };
 	}
 
@@ -69,7 +76,8 @@
 		if (capture.status === 'pending') return;
 		pending = pending.filter((other) => other !== id);
 		savePending();
-		notices = [describe(capture), ...notices];
+		const notice = describe(capture);
+		if (notice) notices = [notice, ...notices];
 	}
 
 	function sent(id: string) {
