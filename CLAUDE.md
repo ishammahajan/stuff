@@ -204,6 +204,11 @@ Remove each point from this section as it lands, and describe the result in **Ma
   before `railway up`. Otherwise `railway up` creates a new project.
 - Variables on `web`: `DATABASE_URL` (a reference to Postgres), `ORIGIN`,
   `OPENROUTER_API_KEY`, and `BODY_SIZE_LIMIT=10M`.
+- To invite someone, run the script inside the `web` container, where the private
+  database URL and `ORIGIN` are set:
+  `railway ssh --service web -- node scripts/invite.ts`. This needs an SSH key on
+  the Railway account (`railway ssh keys github` imports GitHub's). The Postgres
+  service has no public URL, on purpose.
 - Don't add `railway.json` or `railway.toml`. Railway stops reading them on
   2026-12-01. Railpack detects the `build` and `start` scripts on its own.
 
