@@ -4,7 +4,6 @@
 // script never learns it. Links expire after seven days.
 //
 // Options:
-//   --owner         The new account takes over captures made before accounts existed.
 //   --origin <url>  The site's URL for the link. Defaults to the ORIGIN variable.
 import { parseArgs } from 'node:util';
 import { drizzle } from 'drizzle-orm/postgres-js';
@@ -14,12 +13,7 @@ import { invites } from '../src/lib/server/db/schema.ts';
 
 const INVITE_DAYS = 7;
 
-const { values } = parseArgs({
-	options: {
-		owner: { type: 'boolean', default: false },
-		origin: { type: 'string' }
-	}
-});
+const { values } = parseArgs({ options: { origin: { type: 'string' } } });
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL must be set');
@@ -32,8 +26,7 @@ await drizzle(client)
 	.insert(invites)
 	.values({
 		id: sha256Hex(token),
-		expiresAt: new Date(Date.now() + INVITE_DAYS * 24 * 60 * 60 * 1000),
-		adoptUnowned: values.owner
+		expiresAt: new Date(Date.now() + INVITE_DAYS * 24 * 60 * 60 * 1000)
 	});
 await client.end();
 

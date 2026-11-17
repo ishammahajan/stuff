@@ -1,5 +1,5 @@
-import { boolean, customType, index, jsonb, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
-import type { CaptureStatus, Item } from '../../items.ts';
+import { customType, index, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import type { CaptureStatus } from '../../items.ts';
 
 const bytea = customType<{ data: Buffer }>({
 	dataType: () => 'bytea'
@@ -27,9 +27,7 @@ export const invites = pgTable('invites', {
 	id: text('id').primaryKey(),
 	createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 	expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
-	usedAt: timestamp('used_at', { withTimezone: true }),
-	// Whether the new account takes over captures from before accounts existed.
-	adoptUnowned: boolean('adopt_unowned').notNull().default(false)
+	usedAt: timestamp('used_at', { withTimezone: true })
 });
 
 export const sessions = pgTable('sessions', {
@@ -50,23 +48,16 @@ export const captures = pgTable(
 	{
 		// Set by the app, because the ID is part of the encryption context.
 		id: uuid('id').primaryKey(),
-		// Null only for captures from before accounts existed, until they are adopted.
-		userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+		userId: uuid('user_id')
+			.notNull()
+			.references(() => users.id, { onDelete: 'cascade' }),
 		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 		status: text('status').$type<CaptureStatus>().notNull().default('pending'),
 		// Encrypted WAV recording, kept until processing succeeds so a failure can be
 		// retried. Context: `captures:<id>:audio`.
 		audio: bytea('audio'),
 		// Encrypted `CaptureBody` JSON. Context: `captures:<id>:body`.
-		body: bytea('body'),
-
-		// Plaintext columns from before accounts existed. Adoption moves their content
-		// into `body` and clears them. Drop them once no unowned captures remain.
-		localDate: text('local_date'),
-		timeZone: text('time_zone'),
-		transcript: text('transcript'),
-		items: jsonb('items').$type<Item[]>(),
-		error: text('error')
+		body: bytea('body').notNull()
 	},
 	(table) => [index('captures_user_created_idx').on(table.userId, table.createdAt)]
 );

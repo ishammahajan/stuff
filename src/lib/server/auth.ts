@@ -113,7 +113,6 @@ export async function isInviteValid(token: string): Promise<boolean> {
 export interface NewAccount {
 	account: Account;
 	recoveryCode: string;
-	adoptUnowned: boolean;
 }
 
 /** Uses up the invite and creates an account. Returns null if the invite isn't valid. */
@@ -137,7 +136,7 @@ export async function createAccount(inviteToken: string, password: string): Prom
 					gt(invites.expiresAt, new Date())
 				)
 			)
-			.returning({ adoptUnowned: invites.adoptUnowned });
+			.returning({ id: invites.id });
 		if (!invite) return null;
 
 		await tx.insert(users).values({
@@ -147,7 +146,7 @@ export async function createAccount(inviteToken: string, password: string): Prom
 			recoverySalt: byRecovery.salt,
 			recoveryKey: byRecovery.wrapped
 		});
-		return { account: { id, key }, recoveryCode, adoptUnowned: invite.adoptUnowned };
+		return { account: { id, key }, recoveryCode };
 	});
 }
 

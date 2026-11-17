@@ -7,7 +7,6 @@ import {
 	passwordProblem,
 	setSessionCookie
 } from '#lib/server/auth.ts';
-import { adoptUnownedCaptures } from '#lib/server/captures.ts';
 import type { Actions, PageServerLoad } from './$types';
 
 const EXPIRED = 'This invite link has expired or was already used.';
@@ -35,7 +34,6 @@ export const actions: Actions = {
 		const created = await createAccount(params.token, password);
 		if (!created) return fail(410, { message: EXPIRED });
 
-		if (created.adoptUnowned) await adoptUnownedCaptures(created.account);
 		setSessionCookie(cookies, await createSession(created.account));
 		return { recoveryCode: created.recoveryCode };
 	}

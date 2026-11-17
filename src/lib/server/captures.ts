@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq, isNotNull, isNull } from 'drizzle-orm';
+import { and, desc, eq, isNotNull } from 'drizzle-orm';
 import type { CaptureStatus, CaptureView, Item } from '../items.ts';
 import type { Account } from './auth.ts';
 import { decrypt, decryptJson, encrypt, encryptJson } from './crypto.ts';
@@ -103,7 +103,7 @@ async function interpretCapture(account: Account, id: string): Promise<void> {
 		.from(captures)
 		.where(ownedBy(account, id))
 		.limit(1);
-	if (!row?.audio || !row.body) return;
+	if (!row?.audio) return;
 
 	const body = decryptJson<CaptureBody>(account.key, row.body, bodyContext(id));
 	const audio = decrypt(account.key, row.audio, audioContext(id));
@@ -138,16 +138,16 @@ const viewColumns = {
 
 function toView(
 	account: Account,
-	row: { id: string; createdAt: Date; status: CaptureStatus; body: Buffer | null }
+	row: { id: string; createdAt: Date; status: CaptureStatus; body: Buffer }
 ): CaptureView {
-	const body = row.body ? decryptJson<CaptureBody>(account.key, row.body, bodyContext(row.id)) : null;
+	const body = decryptJson<CaptureBody>(account.key, row.body, bodyContext(row.id));
 	return {
 		id: row.id,
 		createdAt: row.createdAt,
 		status: row.status,
-		transcript: body?.transcript ?? null,
-		items: body?.items ?? [],
-		error: body?.error ?? null
+		transcript: body.transcript,
+		items: body.items ?? [],
+		error: body.error
 	};
 }
 
@@ -168,35 +168,4 @@ export async function listCaptures(account: Account, limit = 50): Promise<Captur
 
 export async function deleteCapture(account: Account, id: string): Promise<void> {
 	await db.delete(captures).where(ownedBy(account, id));
-}
-
-/**
- * Gives captures made before accounts existed to this account: encrypts their
- * plaintext columns into `audio` and `body`, then clears those columns.
- */
-export async function adoptUnownedCaptures(account: Account): Promise<number> {
-	const rows = await db.select().from(captures).where(isNull(captures.userId));
-	for (const row of rows) {
-		const body: CaptureBody = {
-			localDate: row.localDate ?? row.createdAt.toISOString().slice(0, 10),
-			timeZone: row.timeZone ?? 'UTC',
-			transcript: row.transcript,
-			items: row.items,
-			error: row.error
-		};
-		await db
-			.update(captures)
-			.set({
-				userId: account.id,
-				audio: row.audio ? encrypt(account.key, row.audio, audioContext(row.id)) : null,
-				body: encryptJson(account.key, body, bodyContext(row.id)),
-				localDate: null,
-				timeZone: null,
-				transcript: null,
-				items: null,
-				error: null
-			})
-			.where(and(eq(captures.id, row.id), isNull(captures.userId)));
-	}
-	return rows.length;
 }

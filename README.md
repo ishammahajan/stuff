@@ -47,7 +47,7 @@ A personal dashboard of small utilities, built with SvelteKit and Postgres.
 | `pnpm start`       | Apply migrations, then run the production build.               |
 | `pnpm db:generate` | Generate a SQL migration after changing the schema.            |
 | `pnpm db:migrate`  | Apply pending migrations.                                      |
-| `pnpm invite`      | Print a one-time sign-up link (`--owner` adopts old captures). |
+| `pnpm invite`      | Print a one-time sign-up link for a new account.               |
 
 The production server also needs two more variables:
 

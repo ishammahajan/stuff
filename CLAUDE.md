@@ -64,8 +64,7 @@ The parts:
   redirect to `/login`, and `/api/*` returns 401 JSON.
 - Sign-up is by invite only. `pnpm invite` (`scripts/invite.ts`) prints a one-time
   link to `/join/<token>` that is valid for 7 days. The invitee chooses their own
-  password, and then sees their recovery code once. `--owner` makes the new account
-  adopt captures from before accounts existed (`adoptUnownedCaptures`).
+  password, and then sees their recovery code once.
 - `/recover` takes a recovery code and a new password, re-wraps the key, and signs
   the account out everywhere else.
 - `src/lib/PasswordField.svelte` is the password input with a Show/Hide toggle.
@@ -113,9 +112,6 @@ to be fresh. Fetch that data from the client instead, as the capture notes do.
 
 - `src/lib/server/db/schema.ts` defines the tables: `users`, `invites`, `sessions`,
   and `captures`. Each encrypted column notes its context string.
-- `captures` still has plaintext columns (`local_date`, `time_zone`, `transcript`,
-  `items`, `error`) from before accounts existed. They are empty once the owner's
-  account has adopted the old captures. Drop them in a later migration.
 - To change the schema, edit `schema.ts`, run `pnpm db:generate`, and commit the SQL
   in `drizzle/`. `pnpm start` applies migrations (`scripts/migrate.ts`) before the
   server starts, locally and on Railway.
