@@ -98,16 +98,63 @@ Remove each point from this section as it lands, and describe the result in **Ma
 - **Accounts:** multiple users, each with private data. Login uses a password only
   (no name field). Every row belongs to a user, and every query is scoped to the
   signed-in user. There is no admin view of other users' data.
-- **Encryption:** user data is encrypted at rest. The design is not settled yet.
+- **Encryption:** user data is encrypted at rest. Proposed design, not yet approved:
+  a random data key per user, stored wrapped by a key derived from the password and
+  by a one-time recovery code. Each session stores a copy wrapped by a key derived
+  from its cookie token. Content is encrypted with AES-256-GCM; timestamps, types,
+  and status stay readable. Background jobs hold the key in memory only while they
+  run, and a job interrupted by a restart waits for the user's next request.
+- **Data model:** one `records` table shared by all utilities. Each row has a user,
+  a type, timestamps, and an encrypted body. A record can be any small document: a
+  task, a budget category with its allocation, a transaction that references a
+  category by ID, or a statement import. Totals and searches run in memory after
+  decryption. A utility may get its own table when the shared table doesn't fit,
+  for example for large files.
 - **Edits from voice:** the model returns operations (create, update, complete,
-  delete by ID) instead of only new items. Every operation is shown in the inbox
-  with an undo.
-- **Context for the model:** a small, bounded snapshot of current data in the prompt
-  (static maps such as budget categories, plus a capped list of active items), and a
-  search tool the model can call. The input is audio, so there is no text to embed
-  before the call: retrieval happens only through that tool, backed by embeddings.
-- **Order:** accounts and encryption, then operations, context, and undo, then the
-  Tasks, Knowledge, and Budget utilities.
+  delete by ID) instead of only new items. Operations are applied in a transaction
+  and logged with the before and after state, so each one can be undone.
+- **Context for the model:** a bounded snapshot in the prompt, plus a search tool.
+  Each utility may add static maps (such as budget categories) and a capped list of
+  active items, or nothing at all. The model is told the snapshot is partial. The
+  input is audio, so there is no text to embed before the call: retrieval happens
+  only through the search tool, backed by embeddings.
+- **Speech meant for the app:** every recording is sent; there is no silence
+  detection in the browser. The instructions tell the model to file only what the
+  speaker directs at the app and to ignore background speech, such as a TV.
+  Recordings with nothing to file are hidden from the recent strip and the inbox.
+- **Order:** accounts and encryption, then the data model, operations, context, and
+  undo, then the capture interface below, then the Tasks, Knowledge, and Budget
+  utilities.
+
+### Capture interface (decided)
+
+- **The pill:** a rounded pill at the bottom centre of every screen, in the shared
+  layout, so recording continues across navigation. It shows a flat line when idle
+  and the live waveform while recording.
+- **Tap:** tap to start, and tap again to stop and send. Recording never stops
+  because of silence.
+- **Hold:** pressing longer than about 300 ms records like a walkie-talkie and sends
+  on release.
+- **Space bar:** on a desktop, a quick press of Space works like a tap, and holding
+  Space works like holding the pill.
+- **Discard:** while recording, a × next to the pill throws the recording away.
+  Swiping the pill down does the same.
+- **Limit:** recordings stop and send at 3 minutes.
+- **Auto-record:** opening the app with `?record=1` starts recording at once. The
+  action-button Shortcut opens that URL, and the plain URL never auto-records.
+- **Drag to edit:** on a utility screen, dragging one or more selected items onto
+  the pill attaches them as chips and starts a tap-style recording. The model
+  receives them as the items being talked about. Recording on a utility's screen
+  also leans the model toward that utility.
+- **Home screen:** an overview (utility tiles now, and later today's tasks and the
+  month's spending). Above the pill, a recent strip shows the last few results with
+  Undo, and answers to questions. The inbox keeps the full history.
+- **Tabs on iPhone:** a page can't close a Safari tab it didn't open, and Shortcuts
+  can't open a Home Screen web app, so the app runs in Safari. Safari reuses an open
+  tab when the Shortcut opens the same URL again, which keeps tabs from piling up.
+  So the app must not rewrite the URL: keep `?record=1` in the address bar.
+  Open question: whether Safari reloads that tab or only focuses it on each press,
+  which decides how a second press starts a new recording.
 - **Not wanted for now:** per-user spending caps. The OpenRouter key has a daily
   cap. Build limits only when a real problem appears.
 
