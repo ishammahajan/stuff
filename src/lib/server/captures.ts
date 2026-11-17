@@ -1,4 +1,4 @@
-import { desc, eq } from 'drizzle-orm';
+import { and, desc, eq, isNotNull } from 'drizzle-orm';
 import type { CaptureView } from '../items.ts';
 import { db } from './db/index.ts';
 import { captures } from './db/schema.ts';
@@ -42,14 +42,44 @@ export async function createCapture(
 	return row.id;
 }
 
+// Captures being processed by this server process, so that a retry cannot start
+// a second model call for a capture that is already in progress.
+const inProgress = new Set<string>();
+
 /**
  * Runs the model over a capture's stored audio and records the outcome.
  * The audio is dropped on success and kept on failure, so a failure can be retried.
  */
-export async function processCapture(id: string): Promise<CaptureView | null> {
+export async function processCapture(id: string): Promise<void> {
+	if (inProgress.has(id)) return;
+	inProgress.add(id);
+	try {
+		await interpretCapture(id);
+	} finally {
+		inProgress.delete(id);
+	}
+}
+
+/** Starts processing without waiting for it. Errors are logged, not thrown. */
+export function processInBackground(id: string): void {
+	processCapture(id).catch((error) => console.error(`Capture ${id} failed to process:`, error));
+}
+
+/**
+ * Restarts processing for captures left pending, for example by a server restart
+ * during a model call. Failed captures wait for a retry from the inbox.
+ */
+export async function resumePendingCaptures(): Promise<void> {
+	const rows = await db
+		.select({ id: captures.id })
+		.from(captures)
+		.where(and(eq(captures.status, 'pending'), isNotNull(captures.audio)));
+	for (const { id } of rows) processInBackground(id);
+}
+
+async function interpretCapture(id: string): Promise<void> {
 	const [capture] = await db.select().from(captures).where(eq(captures.id, id)).limit(1);
-	if (!capture) return null;
-	if (!capture.audio) return getCapture(id);
+	if (!capture?.audio) return;
 
 	try {
 		const result = await interpretAudio(capture.audio, capture.localDate, capture.timeZone);
@@ -67,8 +97,6 @@ export async function processCapture(id: string): Promise<CaptureView | null> {
 		const message = error instanceof Error ? error.message : String(error);
 		await db.update(captures).set({ status: 'failed', error: message }).where(eq(captures.id, id));
 	}
-
-	return getCapture(id);
 }
 
 export async function getCapture(id: string): Promise<CaptureView | null> {

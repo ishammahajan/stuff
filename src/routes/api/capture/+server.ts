@@ -1,11 +1,12 @@
 import { error, json } from '@sveltejs/kit';
-import { createCapture, isWav, MAX_AUDIO_BYTES, processCapture } from '#lib/server/captures.ts';
+import { createCapture, isWav, MAX_AUDIO_BYTES, processInBackground } from '#lib/server/captures.ts';
 import type { RequestHandler } from './$types';
 
 /**
  * Accepts a multipart form with `audio` (a WAV file), `localDate` (YYYY-MM-DD),
- * and `timeZone` (an IANA name). Saves the recording, interprets it, and returns
- * the capture.
+ * and `timeZone` (an IANA name). Saves the recording, starts interpreting it in
+ * the background, and responds with the new capture's ID right away.
+ * Poll `GET /api/capture/{id}` to learn the outcome.
  */
 export const POST: RequestHandler = async ({ request }) => {
 	const form = await request.formData();
@@ -26,5 +27,6 @@ export const POST: RequestHandler = async ({ request }) => {
 	if (!isWav(audio)) error(400, 'The recording must be a WAV file.');
 
 	const id = await createCapture(audio, localDate, timeZone);
-	return json(await processCapture(id));
+	processInBackground(id);
+	return json({ id }, { status: 202 });
 };

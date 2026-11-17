@@ -59,8 +59,12 @@ The production server also needs two more variables:
 - `src/lib/server/db/schema.ts` defines the database tables.
 - `src/service-worker/index.ts` caches the app's files and the dashboard page so the
   dashboard opens at once on repeat visits.
-- `src/routes/capture` records a voice memo and uploads it as WAV to `/api/capture`.
+- `src/lib/Recorder.svelte` records a voice memo on the dashboard and uploads it as WAV to
+  `/api/capture`, which saves it and responds at once.
+- `src/lib/server/captures.ts` processes each capture in the background. Captures left
+  pending by a restart resume when the server starts (`init` in `src/hooks.server.ts`).
 - `src/lib/server/openrouter.ts` sends the recording to Gemini through OpenRouter, which
   returns a transcript and a list of items (task, note, expense, or income).
+- `src/routes/+page.svelte` is the dashboard. It polls `/api/capture/{id}` for recordings
+  it sent and shows a note when each is filed. Add a utility by giving its tile an `href`.
 - `src/routes/inbox` lists captures and lets you retry or delete them.
-- `src/routes/+page.svelte` is the dashboard. Add a utility by giving its tile an `href`.

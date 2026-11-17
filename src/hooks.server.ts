@@ -1,6 +1,14 @@
 import { redirect } from '@sveltejs/kit';
-import type { Handle } from '@sveltejs/kit/hooks';
+import type { Handle, ServerInit } from '@sveltejs/kit/hooks';
 import { isValidSession, SESSION_COOKIE } from '#lib/server/auth.ts';
+import { resumePendingCaptures } from '#lib/server/captures.ts';
+
+export const init: ServerInit = () => {
+	// Not awaited, so the first request is not held up by model calls.
+	resumePendingCaptures().catch((error) =>
+		console.error('Could not resume pending captures:', error)
+	);
+};
 
 export const handle: Handle = async ({ event, resolve }) => {
 	const token = event.cookies.get(SESSION_COOKIE);

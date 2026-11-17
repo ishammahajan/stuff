@@ -15,7 +15,6 @@
 <main>
 	<header>
 		<a href="/">‹ Stuff</a>
-		<a href="/capture">Capture</a>
 	</header>
 
 	<h1>Inbox</h1>

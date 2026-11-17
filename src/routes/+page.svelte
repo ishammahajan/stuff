@@ -1,12 +1,96 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
+	import Recorder from '#lib/Recorder.svelte';
+	import type { CaptureView } from '#lib/items.ts';
+
 	// Utilities shown on the dashboard. Give a tile an `href` when its utility exists.
 	const tiles: { name: string; description: string; href?: string }[] = [
-		{ name: 'Capture', description: 'Speak a note, task, or expense', href: '/capture' },
 		{ name: 'Inbox', description: 'Review what was captured', href: '/inbox' },
 		{ name: 'Tasks', description: 'Things to do' },
 		{ name: 'Knowledge', description: 'Ideas and recommendations' },
 		{ name: 'Budget', description: 'Spending and income' }
 	];
+
+	// IDs of recordings sent but not yet processed. Kept in localStorage so that the
+	// note still appears when the app is closed and opened again before processing ends.
+	const PENDING_KEY = 'stuff:pending-captures';
+	const POLL_MS = 2000;
+
+	interface Notice {
+		id: string;
+		text: string;
+		failed: boolean;
+	}
+
+	let pending = $state<string[]>([]);
+	let notices = $state<Notice[]>([]);
+
+	function savePending() {
+		try {
+			localStorage.setItem(PENDING_KEY, JSON.stringify(pending));
+		} catch {
+			// Storage can be unavailable, for example in private browsing. Polling still
+			// works for as long as the page stays open.
+		}
+	}
+
+	function loadPending(): string[] {
+		try {
+			const value = JSON.parse(localStorage.getItem(PENDING_KEY) ?? '[]');
+			return Array.isArray(value) ? value.filter((id) => typeof id === 'string') : [];
+		} catch {
+			return [];
+		}
+	}
+
+	function describe(capture: CaptureView): Notice {
+		if (capture.status === 'failed') {
+			return { id: capture.id, text: "A recording couldn't be read.", failed: true };
+		}
+		const titles = capture.items.map((item) => item.title);
+		const text =
+			titles.length === 0
+				? 'Nothing to file from a recording.'
+				: `Filed ${titles.length} ${titles.length === 1 ? 'item' : 'items'}: ${titles.join(', ')}.`;
+		return { id: capture.id, text, failed: false };
+	}
+
+	async function check(id: string) {
+		const response = await fetch(`/api/capture/${id}`).catch(() => null);
+		if (!response) return; // Offline; try again on the next poll.
+		if (response.status === 404) {
+			pending = pending.filter((other) => other !== id);
+			savePending();
+			return;
+		}
+		if (!response.ok) return;
+
+		const capture: CaptureView = await response.json();
+		if (capture.status === 'pending') return;
+		pending = pending.filter((other) => other !== id);
+		savePending();
+		notices = [describe(capture), ...notices];
+	}
+
+	function sent(id: string) {
+		pending = [...pending, id];
+		savePending();
+	}
+
+	function dismiss(id: string) {
+		notices = notices.filter((notice) => notice.id !== id);
+	}
+
+	onMount(() => {
+		pending = loadPending();
+	});
+
+	$effect(() => {
+		if (pending.length === 0) return;
+		const ids = [...pending];
+		const timer = setInterval(() => ids.forEach(check), POLL_MS);
+		return () => clearInterval(timer);
+	});
 </script>
 
 <svelte:head>
@@ -20,6 +104,25 @@
 			<button type="submit" class="signout">Sign out</button>
 		</form>
 	</header>
+
+	<Recorder onsent={sent} />
+
+	{#if pending.length > 0}
+		<p class="processing">
+			Processing {pending.length}
+			{pending.length === 1 ? 'recording' : 'recordings'}…
+		</p>
+	{/if}
+
+	{#each notices as notice (notice.id)}
+		<div class="notice" class:failed={notice.failed} role="status">
+			<p>
+				{notice.text}
+				<a href="/inbox">{notice.failed ? 'Retry in inbox' : 'Open inbox'}</a>
+			</p>
+			<button class="dismiss" onclick={() => dismiss(notice.id)} aria-label="Dismiss">×</button>
+		</div>
+	{/each}
 
 	<ul>
 		{#each tiles as tile (tile.name)}
@@ -52,7 +155,6 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		margin-bottom: 1rem;
 	}
 
 	h1 {
@@ -65,6 +167,49 @@
 		padding: 0.4rem 0.75rem;
 		border-radius: 999px;
 		border: 1px solid var(--border);
+		background: transparent;
+		color: var(--muted);
+	}
+
+	.processing {
+		margin: 0 0 0.75rem;
+		text-align: center;
+		font-size: 0.875rem;
+		color: var(--muted);
+	}
+
+	.notice {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.5rem;
+		padding: 0.75rem 1rem;
+		margin-bottom: 0.75rem;
+		border-radius: 1rem;
+		border: 1px solid var(--accent);
+		background: var(--surface);
+	}
+
+	.notice.failed {
+		border-color: var(--danger);
+	}
+
+	.notice p {
+		flex: 1;
+		margin: 0;
+		overflow-wrap: anywhere;
+	}
+
+	.notice a {
+		color: var(--accent);
+		white-space: nowrap;
+	}
+
+	.dismiss {
+		font: inherit;
+		font-size: 1.25rem;
+		line-height: 1;
+		padding: 0 0.25rem;
+		border: none;
 		background: transparent;
 		color: var(--muted);
 	}
@@ -84,7 +229,7 @@
 		flex-direction: column;
 		justify-content: flex-end;
 		gap: 0.25rem;
-		min-height: 7.5rem;
+		min-height: 6.5rem;
 		padding: 1rem;
 		border-radius: 1rem;
 		border: 1px solid var(--border);
@@ -95,6 +240,8 @@
 
 	.soon {
 		opacity: 0.6;
+		/* Keeps the title clear of the badge when the description wraps. */
+		padding-top: 2.25rem;
 	}
 
 	.name {
