@@ -1,7 +1,6 @@
 import { fail } from '@sveltejs/kit';
 import {
 	deleteCapture,
-	fileLegacyItems,
 	listCaptures,
 	processCapture,
 	resumePendingCaptures
@@ -18,7 +17,6 @@ async function captureId(request: Request): Promise<string | null> {
 
 export const load: PageServerLoad = async ({ locals }) => {
 	const account = locals.account!;
-	await fileLegacyItems(account);
 	await resumePendingCaptures(account);
 	return { captures: await listCaptures(account) };
 };

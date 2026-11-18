@@ -2,7 +2,13 @@
 	import { enhance } from '$app/forms';
 	import type { Item, OperationKind, OperationView } from './items.ts';
 
-	let { operations }: { operations: OperationView[] } = $props();
+	interface Props {
+		operations: OperationView[];
+		/** Undoes an operation from the client. Without it, Undo posts the inbox's `undo` action. */
+		onundo?: (id: string) => void;
+	}
+
+	let { operations, onundo }: Props = $props();
 
 	const VERBS: Record<OperationKind, string> = {
 		create: 'Added',
@@ -42,6 +48,8 @@
 			</div>
 			{#if operation.undone}
 				<span class="state">Undone</span>
+			{:else if onundo}
+				<button type="button" onclick={() => onundo(operation.id)}>Undo</button>
 			{:else}
 				<form method="POST" action="?/undo" use:enhance>
 					<input type="hidden" name="id" value={operation.id} />

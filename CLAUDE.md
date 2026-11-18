@@ -72,8 +72,9 @@ The parts:
 
 ### Voice capture pipeline
 
-1. `src/lib/Recorder.svelte` (on the dashboard) records with `MediaRecorder`.
-   `src/lib/audio.ts` converts the recording to 16 kHz mono 16-bit WAV.
+1. The pill (`src/lib/Pill.svelte`, see **Capture interface**) records with
+   `MediaRecorder`. `src/lib/audio.ts` converts the recording to 16 kHz mono 16-bit
+   WAV.
 2. `POST /api/capture` (`src/routes/api/capture/+server.ts`) validates the upload,
    stores the encrypted audio in `captures.audio`, starts processing, and returns
    `202 {id}`. The local date, time zone, transcript, and error live in the
@@ -97,10 +98,12 @@ The parts:
    applies the operations (`applyOperations`). Operations on an ID the account
    doesn't own, and a second operation on the same record, are skipped. On failure
    the capture becomes `failed`, and the audio is kept for a retry.
-7. The dashboard (`src/routes/+page.svelte`) polls `GET /api/capture/{id}` every 2 s
-   for the IDs it sent. It keeps those IDs in `localStorage`, so it still reports
-   results after the app is closed and reopened. A capture that filed nothing shows
-   no notice.
+7. The dashboard's recent strip (`src/lib/RecentStrip.svelte`) shows the last 24
+   hours of the latest three captures from `GET /api/captures`, through the shared
+   state in `src/lib/recent.svelte.ts`. It polls every 2 s while one is pending,
+   and the pill refreshes it after each upload. Undo goes through
+   `POST /api/operations/{id}/undo`. `GET /api/capture/{id}` still reports a single
+   capture.
 8. `src/routes/inbox` lists captures with what each one did
    (`src/lib/OperationList.svelte`), with Undo on each operation, and retry and
    delete actions on each capture. Captures that filed nothing are hidden.
@@ -112,9 +115,23 @@ encrypted state before and after. `undoOperation` writes the before state back.
 Only the latest change to a record can be undone, so an undo never overwrites a
 later change. Deleting a capture deletes its log, not its records.
 
-**Older captures:** captures filed before records existed kept their items in the
-capture body. `fileLegacyItems` turns those into records when the inbox loads.
-Remove it once every account has opened the inbox.
+### Capture interface
+
+- **The pill** (`src/lib/Pill.svelte`) sits at the bottom centre of every signed-in
+  screen. It lives in `src/routes/+layout.svelte`, so a recording continues across
+  navigation, and the layout pads pages so the pill never covers their end. It shows
+  a flat line when idle and the live waveform (an `AnalyserNode`) while recording.
+- **Tap** starts, and a second tap stops and sends. **Holding** longer than 300 ms
+  records like a walkie-talkie and sends on release. **Space** does the same on a
+  desktop, except while typing in a field. Silence never stops a recording.
+- **Discard:** the × next to the pill, or swiping the pill down 60 px.
+- **Limit:** recordings stop and send at 3 minutes.
+- **No auto-record:** opening the app never starts a recording.
+- **Tabs on iPhone:** a page can't close a Safari tab it didn't open, and Shortcuts
+  can't open a Home Screen web app, so the app runs in Safari. The action-button
+  Shortcut opens the plain site URL, and Safari reuses the open tab when the same
+  URL is opened again. Don't make the dashboard rewrite its own URL (for example
+  with query parameters), or the next press opens a new tab.
 
 ### Offline and startup speed
 
@@ -126,7 +143,7 @@ Remove it once every account has opened the inbox.
 - A cached dashboard is dropped when the session ends.
 
 Because the dashboard HTML can be stale, it must not render server data that needs
-to be fresh. Fetch that data from the client instead, as the capture notes do.
+to be fresh. Fetch that data from the client instead, as the recent strip does.
 
 ### Data
 
@@ -168,39 +185,18 @@ Remove each point from this section as it lands, and describe the result in **Ma
 - **Every recording is sent:** there is no silence detection in the browser.
 - **Model provider:** stay on OpenRouter. Calling Google directly, so that only
   Google receives the audio, was considered and rejected on 2026-11-18.
-- **Order:** the capture interface below, then the Tasks, Knowledge, and Budget
-  utilities. Read `~/dev/projects/budgeting` before building Budget.
+- **Order:** the Tasks, Knowledge, and Budget utilities. Read
+  `~/dev/projects/budgeting` before building Budget.
 
-### Capture interface (decided)
+### Capture interface, remaining parts
 
-- **The pill:** a rounded pill at the bottom centre of every screen, in the shared
-  layout, so recording continues across navigation. It shows a flat line when idle
-  and the live waveform while recording.
-- **Tap:** tap to start, and tap again to stop and send. Recording never stops
-  because of silence.
-- **Hold:** pressing longer than about 300 ms records like a walkie-talkie and sends
-  on release.
-- **Space bar:** on a desktop, a quick press of Space works like a tap, and holding
-  Space works like holding the pill.
-- **Discard:** while recording, a × next to the pill throws the recording away.
-  Swiping the pill down does the same.
-- **Limit:** recordings stop and send at 3 minutes.
-- **No auto-record:** opening the app never starts a recording. The app is a
-  dashboard first; the action button opens it, and recording always starts from
-  the pill or the space bar.
 - **Drag to edit:** on a utility screen, dragging one or more selected items onto
   the pill attaches them as chips and starts a tap-style recording. The model
   receives them as the items being talked about. Recording on a utility's screen
-  also leans the model toward that utility.
-- **Home screen:** an overview (utility tiles now, and later today's tasks and the
-  month's spending). Above the pill, a recent strip shows the last few results with
-  Undo, and answers to questions. The inbox keeps the full history.
-- **Tabs on iPhone:** a page can't close a Safari tab it didn't open, and Shortcuts
-  can't open a Home Screen web app, so the app runs in Safari. The action-button
-  Shortcut opens the plain site URL, and Safari reuses the open tab when the same
-  URL is opened again, which keeps tabs from piling up. Don't make the dashboard
-  rewrite its own URL (for example with query parameters), or the next press opens
-  a new tab.
+  also leans the model toward that utility. Build this with the first utility
+  screen.
+- **Home screen:** later, today's tasks and the month's spending join the tiles,
+  and the recent strip also shows answers to questions.
 - **Not wanted for now:** per-user spending caps. The OpenRouter key has a daily
   cap. Build limits only when a real problem appears.
 

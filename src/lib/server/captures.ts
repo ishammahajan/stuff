@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, exists, isNotNull, ne, or } from 'drizzle-orm';
-import type { CaptureStatus, CaptureView, ItemFields, ItemType, OperationView } from '../items.ts';
+import type { CaptureStatus, CaptureView, OperationView } from '../items.ts';
 import type { Account } from './auth.ts';
 import { decrypt, decryptJson, encrypt, encryptJson } from './crypto.ts';
 import { db } from './db/index.ts';
@@ -25,8 +25,6 @@ interface CaptureBody {
 	timeZone: string;
 	transcript: string | null;
 	error: string | null;
-	// Items filed before records existed. `fileLegacyItems` turns them into records.
-	items?: ({ type: ItemType } & ItemFields)[] | null;
 }
 
 const audioContext = (id: string) => `captures:${id}:audio`;
@@ -169,34 +167,6 @@ async function interpretCapture(account: Account, id: string): Promise<void> {
 		{ ...body, transcript: result.transcript, error: null },
 		result.operations
 	);
-}
-
-/**
- * Turns items from captures filed before records existed into records, once.
- * Runs on the user's request, because only their session can unlock the key.
- */
-export async function fileLegacyItems(account: Account): Promise<void> {
-	const rows = await db
-		.select({ id: captures.id, body: captures.body })
-		.from(captures)
-		.where(and(eq(captures.userId, account.id), eq(captures.status, 'done')));
-	for (const row of rows) {
-		const body = decryptJson<CaptureBody>(account.key, row.body, bodyContext(row.id));
-		if (!body.items) continue;
-		const { items, ...rest } = body;
-		await db.transaction(async (tx) => {
-			await tx
-				.update(captures)
-				.set({ body: encryptJson(account.key, rest, bodyContext(row.id)) })
-				.where(ownedBy(account, row.id));
-			await applyOperations(
-				tx,
-				account,
-				row.id,
-				items.map(({ type, ...fields }) => ({ action: 'create', type, fields }))
-			);
-		});
-	}
 }
 
 const viewColumns = {

@@ -1,7 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import Recorder from '#lib/Recorder.svelte';
-	import type { CaptureView, OperationKind } from '#lib/items.ts';
+	import RecentStrip from '#lib/RecentStrip.svelte';
 
 	// Utilities shown on the dashboard. Give a tile an `href` when its utility exists.
 	const tiles: { name: string; description: string; href?: string }[] = [
@@ -10,95 +8,6 @@
 		{ name: 'Knowledge', description: 'Ideas and recommendations' },
 		{ name: 'Budget', description: 'Spending and income' }
 	];
-
-	// IDs of recordings sent but not yet processed. Kept in localStorage so that the
-	// note still appears when the app is closed and opened again before processing ends.
-	const PENDING_KEY = 'stuff:pending-captures';
-	const POLL_MS = 2000;
-
-	interface Notice {
-		id: string;
-		text: string;
-		failed: boolean;
-	}
-
-	let pending = $state<string[]>([]);
-	let notices = $state<Notice[]>([]);
-
-	function savePending() {
-		try {
-			localStorage.setItem(PENDING_KEY, JSON.stringify(pending));
-		} catch {
-			// Storage can be unavailable, for example in private browsing. Polling still
-			// works for as long as the page stays open.
-		}
-	}
-
-	function loadPending(): string[] {
-		try {
-			const value = JSON.parse(localStorage.getItem(PENDING_KEY) ?? '[]');
-			return Array.isArray(value) ? value.filter((id) => typeof id === 'string') : [];
-		} catch {
-			return [];
-		}
-	}
-
-	const VERBS: Record<OperationKind, string> = {
-		create: 'Added',
-		update: 'Changed',
-		complete: 'Done',
-		delete: 'Deleted'
-	};
-
-	/** Describes a processed capture, or returns null when it filed nothing. */
-	function describe(capture: CaptureView): Notice | null {
-		if (capture.status === 'failed') {
-			return { id: capture.id, text: "A recording couldn't be read.", failed: true };
-		}
-		if (capture.operations.length === 0) return null;
-		const text = capture.operations
-			.map((operation) => `${VERBS[operation.kind]}: ${operation.item.title}.`)
-			.join(' ');
-		return { id: capture.id, text, failed: false };
-	}
-
-	async function check(id: string) {
-		const response = await fetch(`/api/capture/${id}`).catch(() => null);
-		if (!response) return; // Offline; try again on the next poll.
-		if (response.status === 404) {
-			pending = pending.filter((other) => other !== id);
-			savePending();
-			return;
-		}
-		if (!response.ok) return;
-
-		const capture: CaptureView = await response.json();
-		if (capture.status === 'pending') return;
-		pending = pending.filter((other) => other !== id);
-		savePending();
-		const notice = describe(capture);
-		if (notice) notices = [notice, ...notices];
-	}
-
-	function sent(id: string) {
-		pending = [...pending, id];
-		savePending();
-	}
-
-	function dismiss(id: string) {
-		notices = notices.filter((notice) => notice.id !== id);
-	}
-
-	onMount(() => {
-		pending = loadPending();
-	});
-
-	$effect(() => {
-		if (pending.length === 0) return;
-		const ids = [...pending];
-		const timer = setInterval(() => ids.forEach(check), POLL_MS);
-		return () => clearInterval(timer);
-	});
 </script>
 
 <svelte:head>
@@ -112,25 +21,6 @@
 			<button type="submit" class="signout">Sign out</button>
 		</form>
 	</header>
-
-	<Recorder onsent={sent} />
-
-	{#if pending.length > 0}
-		<p class="processing">
-			Processing {pending.length}
-			{pending.length === 1 ? 'recording' : 'recordings'}…
-		</p>
-	{/if}
-
-	{#each notices as notice (notice.id)}
-		<div class="notice" class:failed={notice.failed} role="status">
-			<p>
-				{notice.text}
-				<a href="/inbox">{notice.failed ? 'Retry in inbox' : 'Open inbox'}</a>
-			</p>
-			<button class="dismiss" onclick={() => dismiss(notice.id)} aria-label="Dismiss">×</button>
-		</div>
-	{/each}
 
 	<ul>
 		{#each tiles as tile (tile.name)}
@@ -150,13 +40,23 @@
 			</li>
 		{/each}
 	</ul>
+
+	<!-- Pushed to the bottom of the screen, just above the pill. -->
+	<div class="recent">
+		<RecentStrip />
+	</div>
 </main>
 
 <style>
 	main {
 		max-width: 40rem;
 		margin: 0 auto;
-		padding: 1.25rem 1rem 2rem;
+		padding: 1.25rem 1rem 0;
+		display: flex;
+		flex-direction: column;
+		gap: 1.25rem;
+		/* The layout adds 6rem below for the pill. */
+		min-height: calc(100dvh - 6rem - env(safe-area-inset-bottom));
 	}
 
 	header {
@@ -175,49 +75,6 @@
 		padding: 0.4rem 0.75rem;
 		border-radius: 999px;
 		border: 1px solid var(--border);
-		background: transparent;
-		color: var(--muted);
-	}
-
-	.processing {
-		margin: 0 0 0.75rem;
-		text-align: center;
-		font-size: 0.875rem;
-		color: var(--muted);
-	}
-
-	.notice {
-		display: flex;
-		align-items: flex-start;
-		gap: 0.5rem;
-		padding: 0.75rem 1rem;
-		margin-bottom: 0.75rem;
-		border-radius: 1rem;
-		border: 1px solid var(--accent);
-		background: var(--surface);
-	}
-
-	.notice.failed {
-		border-color: var(--danger);
-	}
-
-	.notice p {
-		flex: 1;
-		margin: 0;
-		overflow-wrap: anywhere;
-	}
-
-	.notice a {
-		color: var(--accent);
-		white-space: nowrap;
-	}
-
-	.dismiss {
-		font: inherit;
-		font-size: 1.25rem;
-		line-height: 1;
-		padding: 0 0.25rem;
-		border: none;
 		background: transparent;
 		color: var(--muted);
 	}
@@ -271,5 +128,9 @@
 		border-radius: 999px;
 		border: 1px solid var(--border);
 		color: var(--muted);
+	}
+
+	.recent {
+		margin-top: auto;
 	}
 </style>
