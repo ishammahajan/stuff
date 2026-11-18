@@ -26,6 +26,14 @@
 					<p class="muted">Processing a recording…</p>
 				{:else if capture.status === 'failed'}
 					<p>A recording couldn't be read. <a href="/inbox">Retry in inbox</a></p>
+				{:else if capture.operations.length === 0}
+					<p class="muted">
+						{#if capture.transcript}
+							Nothing to file in “{capture.transcript}”
+						{:else}
+							Nothing was recognized in a recording.
+						{/if}
+					</p>
 				{:else}
 					<OperationList operations={capture.operations} onundo={(id) => recent.undo(id)} />
 				{/if}

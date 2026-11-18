@@ -200,27 +200,27 @@ export async function getCapture(account: Account, id: string): Promise<CaptureV
 }
 
 /**
- * Lists the latest captures. A capture that filed nothing, such as a recording of
- * background speech, is left out.
+ * Lists the latest captures. Unless `includeEmpty` is set, a capture that filed
+ * nothing, such as a silent recording, is left out.
  */
-export async function listCaptures(account: Account, limit = 50): Promise<CaptureView[]> {
+export async function listCaptures(
+	account: Account,
+	limit = 50,
+	{ includeEmpty = false } = {}
+): Promise<CaptureView[]> {
+	const filedSomething = or(
+		ne(captures.status, 'done'),
+		exists(
+			db
+				.select({ id: operations.id })
+				.from(operations)
+				.where(eq(operations.captureId, captures.id))
+		)
+	);
 	const rows = await db
 		.select(viewColumns)
 		.from(captures)
-		.where(
-			and(
-				eq(captures.userId, account.id),
-				or(
-					ne(captures.status, 'done'),
-					exists(
-						db
-							.select({ id: operations.id })
-							.from(operations)
-							.where(eq(operations.captureId, captures.id))
-					)
-				)
-			)
-		)
+		.where(and(eq(captures.userId, account.id), includeEmpty ? undefined : filedSomething))
 		.orderBy(desc(captures.createdAt))
 		.limit(limit);
 	const byCapture = await listOperations(

@@ -101,9 +101,10 @@ The parts:
 7. The dashboard's recent strip (`src/lib/RecentStrip.svelte`) shows the last 24
    hours of the latest three captures from `GET /api/captures`, through the shared
    state in `src/lib/recent.svelte.ts`. It polls every 2 s while one is pending,
-   and the pill refreshes it after each upload. Undo goes through
-   `POST /api/operations/{id}/undo`. `GET /api/capture/{id}` still reports a single
-   capture.
+   and the pill refreshes it after each upload. A capture that filed nothing shows
+   as "Nothing was recognized", or "Nothing to file" with its transcript. Undo goes
+   through `POST /api/operations/{id}/undo`. `GET /api/capture/{id}` still reports
+   a single capture.
 8. `src/routes/inbox` lists captures with what each one did
    (`src/lib/OperationList.svelte`), with Undo on each operation, and retry and
    delete actions on each capture. Captures that filed nothing are hidden.
