@@ -38,7 +38,17 @@ export interface OperationView {
 	undone: boolean;
 }
 
-export type CaptureStatus = 'pending' | 'done' | 'failed';
+/** `asking` means the capture is waiting for the user to answer its question. */
+export type CaptureStatus = 'pending' | 'asking' | 'done' | 'failed';
+
+/** A question the model asked instead of guessing. */
+export interface QuestionView {
+	text: string;
+	/** Labels of the answers offered, in order. */
+	options: string[];
+	/** What settled it: an option's label, or a note such as "Dismissed". Null while open. */
+	answer: string | null;
+}
 
 export interface CaptureView {
 	id: string;
@@ -46,5 +56,6 @@ export interface CaptureView {
 	status: CaptureStatus;
 	transcript: string | null;
 	operations: OperationView[];
+	question: QuestionView | null;
 	error: string | null;
 }

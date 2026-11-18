@@ -1,13 +1,17 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import OperationList from '#lib/OperationList.svelte';
+	import Question from '#lib/Question.svelte';
 	import { recent } from '#lib/recent.svelte.ts';
 
-	// Results older than this stay in the inbox only.
+	// Results older than this stay in the inbox only. Open questions always show.
 	const MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 	let shown = $derived(
-		recent.captures.filter((capture) => Date.now() - capture.createdAt.getTime() < MAX_AGE_MS)
+		recent.captures.filter(
+			(capture) =>
+				capture.status === 'asking' || Date.now() - capture.createdAt.getTime() < MAX_AGE_MS
+		)
 	);
 
 	onMount(() => {
@@ -21,11 +25,19 @@
 			<p class="error" role="alert">{recent.message}</p>
 		{/if}
 		{#each shown as capture (capture.id)}
-			<div class="result" class:failed={capture.status === 'failed'}>
+			<div class="result" class:failed={capture.status === 'failed'}
+					class:asking={capture.status === 'asking'}>
 				{#if capture.status === 'pending'}
 					<p class="muted">Processing a recording…</p>
 				{:else if capture.status === 'failed'}
 					<p>A recording couldn't be read. <a href="/inbox">Retry in inbox</a></p>
+				{:else if capture.question}
+					<div class="stack">
+						{#if capture.operations.length > 0}
+							<OperationList operations={capture.operations} onundo={(id) => recent.undo(id)} />
+						{/if}
+						<Question captureId={capture.id} question={capture.question} />
+					</div>
 				{:else if capture.operations.length === 0}
 					<p class="muted">
 						{#if capture.transcript}
@@ -58,6 +70,15 @@
 
 	.result.failed {
 		border-color: var(--danger);
+	}
+
+	.result.asking {
+		border-color: var(--accent);
+	}
+
+	.stack {
+		display: grid;
+		gap: 0.75rem;
 	}
 
 	p {

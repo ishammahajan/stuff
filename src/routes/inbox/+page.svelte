@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
+	import { invalidateAll } from '$app/navigation';
 	import OperationList from '#lib/OperationList.svelte';
+	import Question from '#lib/Question.svelte';
 	import type { PageProps } from './$types';
 
 	let { data, form }: PageProps = $props();
@@ -28,13 +30,13 @@
 	{/if}
 
 	{#each data.captures as capture (capture.id)}
-		<article>
+		<article class:asking={capture.status === 'asking'}>
 			<div class="top">
 				<time datetime={capture.createdAt.toISOString()}>
 					{formatter.format(capture.createdAt)}
 				</time>
 				<div class="actions">
-					{#if capture.status !== 'done'}
+					{#if capture.status === 'pending' || capture.status === 'failed'}
 						<form method="POST" action="?/retry" use:enhance>
 							<input type="hidden" name="id" value={capture.id} />
 							<button type="submit">Retry</button>
@@ -52,7 +54,16 @@
 			{:else if capture.status === 'pending'}
 				<p class="muted">Not processed yet.</p>
 			{:else}
-				<OperationList operations={capture.operations} />
+				{#if capture.operations.length > 0}
+					<OperationList operations={capture.operations} />
+				{/if}
+				{#if capture.question}
+					<Question
+						captureId={capture.id}
+						question={capture.question}
+						onanswered={invalidateAll}
+					/>
+				{/if}
 			{/if}
 
 			{#if capture.transcript}
@@ -88,6 +99,10 @@
 		border-radius: 1rem;
 		border: 1px solid var(--border);
 		background: var(--surface);
+	}
+
+	article.asking {
+		border-color: var(--accent);
 	}
 
 	.top {

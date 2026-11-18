@@ -19,6 +19,8 @@
 		analyser: AnalyserNode;
 		startedAt: number;
 		discarded: boolean;
+		/** The capture whose question this recording answers. */
+		replyTo: string | null;
 	}
 
 	let phase = $state<Phase>('idle');
@@ -73,13 +75,16 @@
 			context,
 			analyser,
 			startedAt: performance.now(),
-			discarded: false
+			discarded: false,
+			replyTo: recent.replyTo?.id ?? null
 		};
 		recorder.ondataavailable = (event) => {
 			if (event.data.size > 0) chunks.push(event.data);
 		};
 		recorder.onstop = () => {
-			if (!current.discarded) upload(new Blob(chunks, { type: recorder.mimeType }));
+			if (!current.discarded) {
+				upload(new Blob(chunks, { type: recorder.mimeType }), current.replyTo);
+			}
 		};
 		recorder.start();
 		session = current;
@@ -111,15 +116,17 @@
 		phase = 'idle';
 	}
 
-	async function upload(recording: Blob) {
+	async function upload(recording: Blob, replyTo: string | null) {
 		uploads += 1;
 		try {
 			const form = new FormData();
 			form.set('audio', await toWav(recording), 'capture.wav');
 			form.set('localDate', localDate());
 			form.set('timeZone', Intl.DateTimeFormat().resolvedOptions().timeZone);
+			if (replyTo) form.set('replyTo', replyTo);
 			const response = await fetch('/api/capture', { method: 'POST', body: form });
 			if (response.ok) {
+				if (replyTo && recent.replyTo?.id === replyTo) recent.replyTo = null;
 				recent.refresh();
 			} else {
 				const body = await response.json().catch(() => null);
@@ -262,6 +269,12 @@
 	{:else if uploads > 0}
 		<p class="hint">Sending…</p>
 	{/if}
+	{#if recent.replyTo}
+		<p class="chip">
+			<span>Replying: {recent.replyTo.question}</span>
+			<button aria-label="Stop replying" onclick={() => (recent.replyTo = null)}>×</button>
+		</p>
+	{/if}
 	<div class="row">
 		<button
 			class="pill"
@@ -369,6 +382,39 @@
 
 	.hint {
 		color: var(--muted);
+	}
+
+	.chip {
+		display: flex;
+		align-items: center;
+		gap: 0.25rem;
+		max-width: 18rem;
+		margin: 0;
+		padding: 0.2rem 0.3rem 0.2rem 0.75rem;
+		border-radius: 999px;
+		border: 1px solid var(--accent);
+		background: var(--surface);
+		color: var(--accent);
+		font-size: 0.8125rem;
+	}
+
+	.chip span {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.chip button {
+		flex: none;
+		width: 1.5rem;
+		height: 1.5rem;
+		border: 0;
+		border-radius: 50%;
+		background: transparent;
+		color: inherit;
+		font: inherit;
+		font-size: 1rem;
+		line-height: 1;
 	}
 
 	.message {

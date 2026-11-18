@@ -7,8 +7,10 @@ const POLL_MS = 2000;
 
 class Recent {
 	captures = $state<CaptureView[]>([]);
-	/** Why the last undo failed, if it did. */
+	/** Why the last undo or answer failed, if it did. */
 	message = $state('');
+	/** The open question the pill's next recording answers, if the user chose to reply. */
+	replyTo = $state<{ id: string; question: string } | null>(null);
 
 	#timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -31,15 +33,27 @@ class Recent {
 	}
 
 	async undo(operationId: string): Promise<void> {
+		await this.#post(`/api/operations/${operationId}/undo`, undefined, 'Undo');
+	}
+
+	/** Picks an answer to a capture's question, or dismisses it when `option` is null. */
+	async answer(captureId: string, option: number | null): Promise<void> {
+		if (this.replyTo?.id === captureId) this.replyTo = null;
+		await this.#post(`/api/captures/${captureId}/answer`, { option }, 'Answer');
+	}
+
+	async #post(url: string, body: unknown, action: string): Promise<void> {
 		this.message = '';
-		const response = await fetch(`/api/operations/${operationId}/undo`, { method: 'POST' }).catch(
-			() => null
-		);
+		const response = await fetch(url, {
+			method: 'POST',
+			headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+			body: body === undefined ? undefined : JSON.stringify(body)
+		}).catch(() => null);
 		if (!response) {
 			this.message = 'Could not reach the server. Try again.';
 		} else if (!response.ok) {
-			const body = await response.json().catch(() => null);
-			this.message = body?.message ?? `Undo failed (${response.status}).`;
+			const reply = await response.json().catch(() => null);
+			this.message = reply?.message ?? `${action} failed (${response.status}).`;
 		}
 		await this.refresh();
 	}

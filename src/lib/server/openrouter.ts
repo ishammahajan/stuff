@@ -12,6 +12,29 @@ const FILE_TOOL = 'file_memo';
 
 const nullableType = { type: ['string', 'null'], enum: [...ITEM_TYPES, null] };
 
+const OPERATIONS_SCHEMA = {
+	type: 'array',
+	items: {
+		type: 'object',
+		properties: {
+			action: { type: 'string', enum: OPERATION_KINDS },
+			id: { type: ['string', 'null'] },
+			type: nullableType,
+			title: { type: ['string', 'null'] },
+			details: { type: ['string', 'null'] },
+			amount: { type: ['number', 'null'] },
+			currency: { type: ['string', 'null'] },
+			date: { type: ['string', 'null'] },
+			tags: { type: ['array', 'null'], items: { type: 'string' } }
+		},
+		required: ['action', 'id', 'type', 'title', 'details', 'amount', 'currency', 'date', 'tags'],
+		additionalProperties: false
+	}
+};
+
+// An answer a question offers.
+const MAX_OPTIONS = 4;
+
 const TOOLS = [
 	{
 		type: 'function',
@@ -34,42 +57,34 @@ const TOOLS = [
 		type: 'function',
 		function: {
 			name: FILE_TOOL,
-			description: 'Submits the transcript and the operations. Call this once, last.',
+			description:
+				'Submits the transcript, the operations, and an optional question. Call this once, last.',
 			parameters: {
 				type: 'object',
 				properties: {
 					transcript: { type: 'string' },
-					operations: {
-						type: 'array',
-						items: {
-							type: 'object',
-							properties: {
-								action: { type: 'string', enum: OPERATION_KINDS },
-								id: { type: ['string', 'null'] },
-								type: nullableType,
-								title: { type: ['string', 'null'] },
-								details: { type: ['string', 'null'] },
-								amount: { type: ['number', 'null'] },
-								currency: { type: ['string', 'null'] },
-								date: { type: ['string', 'null'] },
-								tags: { type: ['array', 'null'], items: { type: 'string' } }
-							},
-							required: [
-								'action',
-								'id',
-								'type',
-								'title',
-								'details',
-								'amount',
-								'currency',
-								'date',
-								'tags'
-							],
-							additionalProperties: false
-						}
+					operations: OPERATIONS_SCHEMA,
+					question: {
+						type: ['object', 'null'],
+						description: 'One question about the unclear part of the memo, or null.',
+						properties: {
+							text: { type: 'string' },
+							options: {
+								type: 'array',
+								description: `Two to ${MAX_OPTIONS} answers, each with the operations to apply if the speaker picks it.`,
+								items: {
+									type: 'object',
+									properties: { label: { type: 'string' }, operations: OPERATIONS_SCHEMA },
+									required: ['label', 'operations'],
+									additionalProperties: false
+								}
+							}
+						},
+						required: ['text', 'options'],
+						additionalProperties: false
 					}
 				},
-				required: ['transcript', 'operations'],
+				required: ['transcript', 'operations', 'question'],
 				additionalProperties: false
 			}
 		}
@@ -110,7 +125,25 @@ Below are some of the speaker's records, one JSON object per line: open tasks an
 
 ${context.snapshot || '(no records yet)'}
 
-When you are done, call ${FILE_TOOL} with the transcript and the operations.`;
+${context.reply ? replyInstructions(context.reply) : ASKING}
+
+When you are done, call ${FILE_TOOL} with the transcript, the operations, and the question.`;
+}
+
+const ASKING = `Asking:
+Ask only when a wrong guess would change or remove the wrong record: for example, "mark the dentist task done" when two open tasks could match, or a delete the speaker may not mean. Then leave that part out of operations, and set question to one short question with two to ${MAX_OPTIONS} options. Give each option a short label and the exact operations to apply if the speaker picks it. Still file everything that is clear in operations.
+Never ask about a new record: create it with your best guess, because the speaker can undo it. Never ask about a missing detail: leave the field null. Otherwise set question to null.`;
+
+function replyInstructions(reply: ReplyContext): string {
+	const options = reply.options
+		.map((option, i) => `${i + 1}. ${option.label}: ${JSON.stringify(option.operations)}`)
+		.join('\n');
+	return `This recording answers a question you asked about an earlier memo. The clear parts of that memo are already filed. File only what the question was about, as this answer settles it. If the answer matches an option, use that option's operations. Don't ask again: set question to null.
+
+Earlier memo: "${reply.transcript}"
+Your question: ${reply.question}
+Options you offered:
+${options || '(none)'}`;
 }
 
 export interface FilingContext {
@@ -120,11 +153,31 @@ export interface FilingContext {
 	snapshot: string;
 	/** Runs the search tool over all of the speaker's records. */
 	search: (query: string, type: ItemType | null) => unknown;
+	/** Set when the recording answers an open question. */
+	reply: ReplyContext | null;
+}
+
+export interface QuestionOption {
+	label: string;
+	operations: ProposedOperation[];
+}
+
+export interface ProposedQuestion {
+	text: string;
+	options: QuestionOption[];
+}
+
+/** The earlier memo and question that a recording answers. */
+export interface ReplyContext {
+	transcript: string;
+	question: string;
+	options: QuestionOption[];
 }
 
 export interface Interpretation {
 	transcript: string;
 	operations: ProposedOperation[];
+	question: ProposedQuestion | null;
 }
 
 const isItemType = (value: unknown): value is ItemType => ITEM_TYPES.includes(value as ItemType);
@@ -176,6 +229,21 @@ function parseOperations(value: unknown): ProposedOperation[] {
 		}
 	}
 	return parsed;
+}
+
+/** Keeps a well-formed question, or returns null. */
+function parseQuestion(value: unknown): ProposedQuestion | null {
+	if (typeof value !== 'object' || value === null) return null;
+	const raw = value as Record<string, unknown>;
+	if (typeof raw.text !== 'string' || !raw.text.trim()) return null;
+	const options: QuestionOption[] = [];
+	for (const option of Array.isArray(raw.options) ? raw.options : []) {
+		if (typeof option !== 'object' || option === null) continue;
+		const { label, operations } = option as Record<string, unknown>;
+		if (typeof label !== 'string' || !label.trim()) continue;
+		options.push({ label: label.trim(), operations: parseOperations(operations) });
+	}
+	return { text: raw.text.trim(), options: options.slice(0, MAX_OPTIONS) };
 }
 
 interface ToolCall {
@@ -258,7 +326,9 @@ export async function interpretAudio(wav: Buffer, context: FilingContext): Promi
 			const args = parseArguments(filing);
 			return {
 				transcript: typeof args.transcript === 'string' ? args.transcript : '',
-				operations: parseOperations(args.operations)
+				operations: parseOperations(args.operations),
+				// A reply settles a question, so it can't open another.
+				question: context.reply ? null : parseQuestion(args.question)
 			};
 		}
 

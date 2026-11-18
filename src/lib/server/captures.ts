@@ -1,18 +1,19 @@
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq, exists, isNotNull, ne, or } from 'drizzle-orm';
+import { and, desc, eq, exists, inArray, isNotNull, ne, or, sql } from 'drizzle-orm';
 import type { CaptureStatus, CaptureView, OperationView } from '../items.ts';
 import type { Account } from './auth.ts';
 import { decrypt, decryptJson, encrypt, encryptJson } from './crypto.ts';
 import { db } from './db/index.ts';
 import { captures, operations } from './db/schema.ts';
-import { interpretAudio } from './openrouter.ts';
+import { interpretAudio, type ProposedQuestion, type ReplyContext } from './openrouter.ts';
 import {
 	applyOperations,
 	listOperations,
 	loadRecords,
 	searchRecords,
 	snapshot,
-	type ProposedOperation
+	type ProposedOperation,
+	type Transaction
 } from './records.ts';
 
 // 16 kHz mono 16-bit WAV is about 32 kB per second, so this allows roughly four minutes.
@@ -25,6 +26,10 @@ interface CaptureBody {
 	timeZone: string;
 	transcript: string | null;
 	error: string | null;
+	// The question the model asked instead of guessing, with what settled it.
+	question?: (ProposedQuestion & { answer: string | null }) | null;
+	// The capture whose open question this recording answers.
+	replyTo?: string | null;
 }
 
 const audioContext = (id: string) => `captures:${id}:audio`;
@@ -46,10 +51,11 @@ export async function createCapture(
 	account: Account,
 	audio: Buffer,
 	localDate: string,
-	timeZone: string
+	timeZone: string,
+	replyTo: string | null = null
 ): Promise<string> {
 	const id = randomUUID();
-	const body: CaptureBody = { localDate, timeZone, transcript: null, error: null };
+	const body: CaptureBody = { localDate, timeZone, transcript: null, error: null, replyTo };
 	await db.insert(captures).values({
 		id,
 		userId: account.id,
@@ -109,27 +115,95 @@ class AlreadyDone extends Error {}
 
 /**
  * Applies operations and saves the capture's new body in one transaction, unless
- * the capture is already done.
+ * another run already finished the capture. A capture with an open question waits
+ * in `asking`. A reply also closes the question it answers.
  */
 async function finishCapture(
 	account: Account,
 	id: string,
 	body: CaptureBody,
-	proposed: ProposedOperation[]
+	proposed: ProposedOperation[],
+	answers: string | null
 ): Promise<void> {
+	const status: CaptureStatus = body.question ? 'asking' : 'done';
 	try {
 		await db.transaction(async (tx) => {
 			const updated = await tx
 				.update(captures)
-				.set({ status: 'done', audio: null, body: encryptJson(account.key, body, bodyContext(id)) })
-				.where(and(ownedBy(account, id), ne(captures.status, 'done')))
+				.set({ status, audio: null, body: encryptJson(account.key, body, bodyContext(id)) })
+				.where(and(ownedBy(account, id), inArray(captures.status, ['pending', 'failed'])))
 				.returning({ id: captures.id });
 			if (updated.length === 0) throw new AlreadyDone();
 			await applyOperations(tx, account, id, proposed);
+			if (answers) await closeQuestion(tx, account, answers, 'Answered by voice');
 		});
 	} catch (error) {
 		if (!(error instanceof AlreadyDone)) throw error;
 	}
+}
+
+/** Reads a capture's open question, or returns null when it has none. */
+async function openQuestion(
+	executor: Transaction | typeof db,
+	account: Account,
+	id: string
+): Promise<CaptureBody | null> {
+	const [row] = await executor
+		.select({ body: captures.body })
+		.from(captures)
+		.where(and(ownedBy(account, id), eq(captures.status, 'asking')))
+		.limit(1);
+	if (!row) return null;
+	const body = decryptJson<CaptureBody>(account.key, row.body, bodyContext(id));
+	return body.question && !body.question.answer ? body : null;
+}
+
+/** Whether the capture is the account's and waits for an answer. */
+export async function isOpenQuestion(account: Account, id: string): Promise<boolean> {
+	return (await openQuestion(db, account, id)) !== null;
+}
+
+/**
+ * Records what settled a question and marks its capture done. Returns the body as
+ * it was, or null if the question was already closed.
+ */
+async function closeQuestion(
+	tx: Transaction,
+	account: Account,
+	id: string,
+	answer: string
+): Promise<CaptureBody | null> {
+	const body = await openQuestion(tx, account, id);
+	if (!body?.question) return null;
+	const closed: CaptureBody = { ...body, question: { ...body.question, answer } };
+	const updated = await tx
+		.update(captures)
+		.set({ status: 'done', body: encryptJson(account.key, closed, bodyContext(id)) })
+		.where(and(ownedBy(account, id), eq(captures.status, 'asking')))
+		.returning({ id: captures.id });
+	return updated.length > 0 ? body : null;
+}
+
+/**
+ * Settles a capture's open question: applies the chosen option's operations, or
+ * changes nothing when `option` is null (dismissed). Returns a message when the
+ * question is no longer open.
+ */
+export async function answerQuestion(
+	account: Account,
+	id: string,
+	option: number | null
+): Promise<string | null> {
+	return db.transaction(async (tx) => {
+		const body = await openQuestion(tx, account, id);
+		const chosen = option === null ? null : body?.question?.options[option];
+		if (!body || (option !== null && !chosen)) return 'This question is no longer open.';
+		const closed = await closeQuestion(tx, account, id, chosen ? chosen.label : 'Dismissed');
+		if (!closed) return 'This question is no longer open.';
+		// The operations are checked again against the account's records as they are now.
+		if (chosen) await applyOperations(tx, account, id, chosen.operations);
+		return null;
+	});
 }
 
 async function interpretCapture(account: Account, id: string): Promise<void> {
@@ -143,6 +217,16 @@ async function interpretCapture(account: Account, id: string): Promise<void> {
 	const body = decryptJson<CaptureBody>(account.key, row.body, bodyContext(id));
 	const audio = decrypt(account.key, row.audio, audioContext(id));
 
+	// A reply to a question that was settled meanwhile is filed as a plain memo.
+	const parent = body.replyTo ? await openQuestion(db, account, body.replyTo) : null;
+	const reply: ReplyContext | null = parent?.question
+		? {
+				transcript: parent.transcript ?? '',
+				question: parent.question.text,
+				options: parent.question.options
+			}
+		: null;
+
 	let result;
 	try {
 		const all = await loadRecords(account);
@@ -150,7 +234,8 @@ async function interpretCapture(account: Account, id: string): Promise<void> {
 			localDate: body.localDate,
 			timeZone: body.timeZone,
 			snapshot: snapshot(all),
-			search: (query, type) => searchRecords(all, query, type)
+			search: (query, type) => searchRecords(all, query, type),
+			reply
 		});
 	} catch (error) {
 		const failed = { ...body, error: error instanceof Error ? error.message : String(error) };
@@ -161,11 +246,13 @@ async function interpretCapture(account: Account, id: string): Promise<void> {
 		return;
 	}
 
+	const question = result.question ? { ...result.question, answer: null } : null;
 	await finishCapture(
 		account,
 		id,
-		{ ...body, transcript: result.transcript, error: null },
-		result.operations
+		{ ...body, transcript: result.transcript, question, error: null },
+		result.operations,
+		reply ? body.replyTo! : null
 	);
 }
 
@@ -188,6 +275,13 @@ function toView(
 		status: row.status,
 		transcript: body.transcript,
 		operations,
+		question: body.question
+			? {
+					text: body.question.text,
+					options: body.question.options.map((option) => option.label),
+					answer: body.question.answer
+				}
+			: null,
 		error: body.error
 	};
 }
@@ -221,7 +315,8 @@ export async function listCaptures(
 		.select(viewColumns)
 		.from(captures)
 		.where(and(eq(captures.userId, account.id), includeEmpty ? undefined : filedSomething))
-		.orderBy(desc(captures.createdAt))
+		// Open questions first, so they stay in view until answered.
+		.orderBy(desc(sql`${captures.status} = 'asking'`), desc(captures.createdAt))
 		.limit(limit);
 	const byCapture = await listOperations(
 		account,

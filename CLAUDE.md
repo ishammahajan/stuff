@@ -93,9 +93,11 @@ The parts:
    records. `file_memo` ends the loop with the transcript and a list of operations:
    create, update, complete, or delete by record ID. The last call forces
    `file_memo`. The instructions tell the model to file only speech meant for the
-   app and to ignore background speech, such as a TV.
-6. On success, one transaction marks the capture `done`, deletes the audio, and
-   applies the operations (`applyOperations`). Operations on an ID the account
+   app and to ignore background speech, such as a TV. `file_memo` can also carry
+   one question (see **Questions** below).
+6. On success, one transaction marks the capture `done` (or `asking`, when it has
+   an open question), deletes the audio, and applies the operations
+   (`applyOperations`). Operations on an ID the account
    doesn't own, and a second operation on the same record, are skipped. On failure
    the capture becomes `failed`, and the audio is kept for a retry.
 7. The dashboard's recent strip (`src/lib/RecentStrip.svelte`) shows the last 24
@@ -107,7 +109,24 @@ The parts:
    a single capture.
 8. `src/routes/inbox` lists captures with what each one did
    (`src/lib/OperationList.svelte`), with Undo on each operation, and retry and
-   delete actions on each capture. Captures that filed nothing are hidden.
+   delete actions on each capture. Captures that filed nothing are hidden. Both
+   lists put open questions first.
+
+**Questions:** the model asks only when a wrong guess would change or remove the
+wrong record, such as completing one of two matching tasks. It still files the
+clear parts, and never asks about new records or missing details. The question and
+two to four options, each with the exact operations to apply, live in the
+encrypted `captures.body`. `src/lib/Question.svelte` shows it in the strip and the
+inbox:
+
+- Tapping an option (`POST /api/captures/{id}/answer` with `{ option }`) applies
+  that option's operations, checked again by `applyOperations`, under the asking
+  capture. `{ option: null }` dismisses the question.
+- "Answer by voice" sets `recent.replyTo`, which shows a "Replying" chip on the
+  pill. The next recording is posted with `replyTo`, and the model receives the
+  earlier transcript, the question, and the options. A reply can't ask again, and
+  filing it closes the question as "Answered by voice". A reply to a question that
+  was closed meanwhile is filed as a plain memo.
 
 Item types and the shared shapes live in `src/lib/items.ts`.
 
