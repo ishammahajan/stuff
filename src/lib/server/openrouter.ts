@@ -89,6 +89,8 @@ First transcribe the audio faithfully, in the language spoken. Then work out wha
 
 File only speech meant for the app, such as "remind me to call the bank", "I spent 20 on lunch", or "note that Sam recommended Dune". Ignore background speech, such as a TV, a phone call, or other people talking, and anything the speaker says to someone else. If nothing is meant for the app, return no operations. Never invent records.
 
+The recording may be empty: silence, breathing, or only noise. Recordings are never cut off for silence, so this is common. If you can't make out clear words, set the transcript to an empty string and return no operations. Never guess words from noise.
+
 Record types:
 - task: something the speaker needs to do.
 - expense: money the speaker spent or owes.
