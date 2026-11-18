@@ -1,3 +1,6 @@
 engineStrict: true
 onlyBuiltDependencies:
   - esbuild
+ignoredBuiltDependencies:
+  # Its install script only fetches GPU libraries. The CPU build ships in the package.
+  - onnxruntime-node

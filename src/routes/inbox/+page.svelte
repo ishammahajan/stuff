@@ -66,6 +66,9 @@
 				{/if}
 			{/if}
 
+			{#if capture.fileName}
+				<p class="quote">File: {capture.fileName}</p>
+			{/if}
 			{#if capture.transcript}
 				<p class="quote">“{capture.transcript}”</p>
 			{/if}

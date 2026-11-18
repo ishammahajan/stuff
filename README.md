@@ -53,7 +53,7 @@ The production server also needs two more variables:
 
 - `ORIGIN`: the site's URL, for example `ORIGIN=https://example.com`, so that form
   submissions pass the origin check.
-- `BODY_SIZE_LIMIT=10M`: the default limit of 512 kB is too small for voice recordings.
+- `BODY_SIZE_LIMIT=20M`: the default limit of 512 kB is too small for recordings and files.
 
 ## How it fits together
 

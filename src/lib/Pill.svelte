@@ -9,6 +9,9 @@
 	const HOLD_MS = 300;
 	// Dragging the pill down this far while recording throws the recording away.
 	const SWIPE_PX = 60;
+	// The server takes files up to this size.
+	const MAX_FILE_BYTES = 10 * 1024 * 1024;
+	const FILE_TYPES = 'image/*,application/pdf';
 
 	type Phase = 'idle' | 'starting' | 'recording';
 
@@ -21,13 +24,18 @@
 		discarded: boolean;
 		/** The capture whose question this recording answers. */
 		replyTo: string | null;
+		/** The file sent along with this recording. */
+		file: File | null;
 	}
 
 	let phase = $state<Phase>('idle');
 	let seconds = $state(0);
 	let uploads = $state(0);
 	let message = $state('');
+	/** A file waiting to be sent, alone or with the next recording. */
+	let attachment = $state<File | null>(null);
 	let canvas: HTMLCanvasElement;
+	let picker: HTMLInputElement;
 
 	let session: Session | null = null;
 	let cancelStart = false;
@@ -76,14 +84,15 @@
 			analyser,
 			startedAt: performance.now(),
 			discarded: false,
-			replyTo: recent.replyTo?.id ?? null
+			replyTo: recent.replyTo?.id ?? null,
+			file: attachment
 		};
 		recorder.ondataavailable = (event) => {
 			if (event.data.size > 0) chunks.push(event.data);
 		};
 		recorder.onstop = () => {
 			if (!current.discarded) {
-				upload(new Blob(chunks, { type: recorder.mimeType }), current.replyTo);
+				upload(new Blob(chunks, { type: recorder.mimeType }), current.file, current.replyTo);
 			}
 		};
 		recorder.start();
@@ -116,27 +125,67 @@
 		phase = 'idle';
 	}
 
-	async function upload(recording: Blob, replyTo: string | null) {
+	/** Sends a recording, a file, or both. The file and the reply stay set if it fails. */
+	async function upload(recording: Blob | null, file: File | null, replyTo: string | null) {
 		uploads += 1;
 		try {
 			const form = new FormData();
-			form.set('audio', await toWav(recording), 'capture.wav');
+			if (recording) form.set('audio', await toWav(recording), 'capture.wav');
+			if (file) form.set('file', file, file.name);
 			form.set('localDate', localDate());
 			form.set('timeZone', Intl.DateTimeFormat().resolvedOptions().timeZone);
 			if (replyTo) form.set('replyTo', replyTo);
 			const response = await fetch('/api/capture', { method: 'POST', body: form });
 			if (response.ok) {
 				if (replyTo && recent.replyTo?.id === replyTo) recent.replyTo = null;
+				if (file && attachment === file) attachment = null;
 				recent.refresh();
 			} else {
 				const body = await response.json().catch(() => null);
 				message = body?.message ?? `Upload failed (${response.status}).`;
 			}
 		} catch {
-			message = 'Could not send the recording. Check your connection and try again.';
+			message = 'Could not send. Check your connection and try again.';
 		} finally {
 			uploads -= 1;
 		}
+	}
+
+	function attach(file: File | undefined) {
+		if (!file) return;
+		message = '';
+		if (!file.type.startsWith('image/') && file.type !== 'application/pdf') {
+			message = 'Only images and PDFs can be sent.';
+		} else if (file.size > MAX_FILE_BYTES) {
+			message = 'The file is larger than 10 MB.';
+		} else {
+			attachment = file;
+		}
+	}
+
+	function onpicked() {
+		attach(picker.files?.[0]);
+		// Lets the same file be picked again later.
+		picker.value = '';
+	}
+
+	function onpaste(event: ClipboardEvent) {
+		const file = event.clipboardData?.files[0];
+		if (!file || isTyping(event.target)) return;
+		event.preventDefault();
+		attach(file);
+	}
+
+	const carriesFiles = (event: DragEvent) => event.dataTransfer?.types.includes('Files') ?? false;
+
+	function ondragover(event: DragEvent) {
+		if (carriesFiles(event)) event.preventDefault();
+	}
+
+	function ondrop(event: DragEvent) {
+		if (!carriesFiles(event)) return;
+		event.preventDefault();
+		attach(event.dataTransfer?.files[0]);
 	}
 
 	// Press and release, shared by the pointer and the space bar. A press while idle
@@ -261,13 +310,24 @@
 	});
 </script>
 
-<svelte:window {onkeydown} {onkeyup} />
+<svelte:window {onkeydown} {onkeyup} {onpaste} {ondragover} {ondrop} />
 
 <div class="dock">
 	{#if message}
 		<p class="message" role="alert">{message}</p>
 	{:else if uploads > 0}
 		<p class="hint">Sending…</p>
+	{/if}
+	{#if attachment}
+		<p class="chip">
+			<span>{attachment.name}</span>
+			{#if phase === 'idle'}
+				<button class="send" onclick={() => upload(null, attachment, recent.replyTo?.id ?? null)}
+					>Send</button
+				>
+			{/if}
+			<button aria-label="Remove file" onclick={() => (attachment = null)}>×</button>
+		</p>
 	{/if}
 	{#if recent.replyTo}
 		<p class="chip">
@@ -276,6 +336,12 @@
 		</p>
 	{/if}
 	<div class="row">
+		{#if phase === 'idle'}
+			<button class="side attach" aria-label="Attach an image or a PDF" onclick={() => picker.click()}
+				>+</button
+			>
+		{/if}
+		<input bind:this={picker} type="file" accept={FILE_TYPES} hidden onchange={onpicked} />
 		<button
 			class="pill"
 			class:live={phase !== 'idle'}
@@ -294,7 +360,9 @@
 			{/if}
 		</button>
 		{#if phase !== 'idle'}
-			<button class="discard" aria-label="Discard recording" onclick={() => finish(false)}>×</button>
+			<button class="side discard" aria-label="Discard recording" onclick={() => finish(false)}
+				>×</button
+			>
 		{/if}
 	</div>
 </div>
@@ -353,11 +421,9 @@
 		font-variant-numeric: tabular-nums;
 	}
 
-	.discard {
+	.side {
 		position: absolute;
 		top: 50%;
-		left: 100%;
-		transform: translate(0.5rem, -50%);
 		width: 2.25rem;
 		height: 2.25rem;
 		border-radius: 50%;
@@ -367,6 +433,16 @@
 		font: inherit;
 		font-size: 1.25rem;
 		line-height: 1;
+	}
+
+	.discard {
+		left: 100%;
+		transform: translate(0.5rem, -50%);
+	}
+
+	.attach {
+		right: 100%;
+		transform: translate(-0.5rem, -50%);
 	}
 
 	.message,
@@ -402,6 +478,14 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	.chip button.send {
+		width: auto;
+		padding: 0 0.6rem;
+		border: 1px solid var(--accent);
+		border-radius: 999px;
+		font-size: 0.8125rem;
 	}
 
 	.chip button {

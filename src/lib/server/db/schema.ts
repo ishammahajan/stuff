@@ -56,6 +56,9 @@ export const captures = pgTable(
 		// Encrypted WAV recording, kept until processing succeeds so a failure can be
 		// retried. Context: `captures:<id>:audio`.
 		audio: bytea('audio'),
+		// Encrypted attached file (an image or a PDF), kept like the audio. Its name and
+		// type are in the body. Context: `captures:<id>:file`.
+		file: bytea('file'),
 		// Encrypted `CaptureBody` JSON. Context: `captures:<id>:body`.
 		body: bytea('body').notNull()
 	},

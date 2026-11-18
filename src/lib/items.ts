@@ -55,6 +55,8 @@ export interface CaptureView {
 	createdAt: Date;
 	status: CaptureStatus;
 	transcript: string | null;
+	/** The name of the attached file, if any. */
+	fileName: string | null;
 	operations: OperationView[];
 	question: QuestionView | null;
 	error: string | null;

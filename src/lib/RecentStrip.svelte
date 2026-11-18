@@ -28,9 +28,14 @@
 			<div class="result" class:failed={capture.status === 'failed'}
 					class:asking={capture.status === 'asking'}>
 				{#if capture.status === 'pending'}
-					<p class="muted">Processing a recording…</p>
+					<p class="muted">
+						{capture.fileName ? `Reading “${capture.fileName}”…` : 'Processing a recording…'}
+					</p>
 				{:else if capture.status === 'failed'}
-					<p>A recording couldn't be read. <a href="/inbox">Retry in inbox</a></p>
+					<p>
+						{capture.fileName ? `“${capture.fileName}” couldn't be read.` : "A recording couldn't be read."}
+						<a href="/inbox">Retry in inbox</a>
+					</p>
 				{:else if capture.question}
 					<div class="stack">
 						{#if capture.operations.length > 0}
@@ -40,8 +45,8 @@
 					</div>
 				{:else if capture.operations.length === 0}
 					<p class="muted">
-						{#if capture.transcript}
-							Nothing to file in “{capture.transcript}”
+						{#if capture.transcript || capture.fileName}
+							Nothing to file in “{capture.transcript || capture.fileName}”
 						{:else}
 							Nothing was recognized in a recording.
 						{/if}

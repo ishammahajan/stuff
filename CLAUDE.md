@@ -2,7 +2,8 @@
 
 A personal app of small utilities (tasks, knowledge, budget), opened from the iPhone
 action button. Speech is the main input: the user records a voice memo, and a model
-turns it into items for the utilities. Human setup steps are in `README.md`.
+turns it into items for the utilities. An image or a PDF can be sent too, alone or
+with a recording. Human setup steps are in `README.md`.
 
 Keep this file current. When a change alters anything described here, update this file
 in the same commit.
@@ -70,33 +71,47 @@ The parts:
 - `src/lib/PasswordField.svelte` is the password input with a Show/Hide toggle.
 - CSRF protection is SvelteKit's origin check, so production needs `ORIGIN` set.
 
-### Voice capture pipeline
+### Capture pipeline
 
 1. The pill (`src/lib/Pill.svelte`, see **Capture interface**) records with
    `MediaRecorder`. `src/lib/audio.ts` converts the recording to 16 kHz mono 16-bit
-   WAV.
-2. `POST /api/capture` (`src/routes/api/capture/+server.ts`) validates the upload,
-   stores the encrypted audio in `captures.audio`, starts processing, and returns
-   `202 {id}`. The local date, time zone, transcript, and error live in the
-   encrypted `captures.body` JSON.
+   WAV. An attached file is sent as it is.
+2. `POST /api/capture` (`src/routes/api/capture/+server.ts`) takes a recording, a
+   file, or both. It validates them, stores them encrypted in `captures.audio` and
+   `captures.file`, starts processing, and returns `202 {id}`. A file's type comes
+   from its first bytes (`attachmentType`): PNG, JPEG, WebP, HEIC, or PDF, up to
+   10 MB. The local date, time zone, file name and type, transcript, and error live
+   in the encrypted `captures.body` JSON.
 3. `src/lib/server/captures.ts` processes in the background with the account's key.
    It keeps an in-process set of captures in progress, so one capture never gets
    two model calls. After a restart, a pending capture resumes when its owner polls
    it or opens the inbox.
+   **Speech detection:** first, `keepSpeech` (`src/lib/server/speech.ts`) runs
+   Silero VAD (`models/silero_vad.onnx`, through `onnxruntime-node`) over the
+   recording. It recognizes speech rather than loudness, so fan, traffic, or café
+   noise doesn't count. It cuts pauses longer than 1 s and the noise around the
+   speech. A recording with no speech is dropped, and without a file the capture is
+   done with nothing filed and no model call. Background speech, such as a TV,
+   still passes; the prompt handles it. The model takes about 50 MB of memory and
+   0.7 s of CPU per minute of audio. If detection fails, the whole recording is
+   sent.
 4. Before the call, all of the user's records are loaded and decrypted
    (`loadRecords` in `src/lib/server/records.ts`). `snapshot` puts a capped list in
    the prompt: up to 50 open tasks, and the latest 20 notes, 20 expenses, and 10
    income records. The prompt says the list is partial.
-5. `src/lib/server/openrouter.ts` sends the audio and instructions to
+5. `src/lib/server/openrouter.ts` (`interpretMemo`) sends the audio, the file (an
+   image as `image_url`, a PDF as `file`), and instructions to
    `google/gemini-3.8-flash` on OpenRouter with two tools, in a loop of at most four
    calls. `search_records` runs `searchRecords`, a keyword match over the decrypted
    records. `file_memo` ends the loop with the transcript and a list of operations:
    create, update, complete, or delete by record ID. The last call forces
    `file_memo`. The instructions tell the model to file only speech meant for the
-   app and to ignore background speech, such as a TV. `file_memo` can also carry
+   app and to ignore background speech, such as a TV. A file is filed by what it
+   holds, such as a receipt as an expense; a file with many entries, such as a bank
+   statement, becomes one summary note. `file_memo` can also carry
    one question (see **Questions** below).
 6. On success, one transaction marks the capture `done` (or `asking`, when it has
-   an open question), deletes the audio, and applies the operations
+   an open question), deletes the audio and the file, and applies the operations
    (`applyOperations`). Operations on an ID the account
    doesn't own, and a second operation on the same record, are skipped. On failure
    the capture becomes `failed`, and the audio is kept for a retry.
@@ -104,7 +119,8 @@ The parts:
    hours of the latest three captures from `GET /api/captures`, through the shared
    state in `src/lib/recent.svelte.ts`. It polls every 2 s while one is pending,
    and the pill refreshes it after each upload. A capture that filed nothing shows
-   as "Nothing was recognized", or "Nothing to file" with its transcript. Undo goes
+   as "Nothing was recognized", or "Nothing to file" with its transcript or file
+   name. Undo goes
    through `POST /api/operations/{id}/undo`. `GET /api/capture/{id}` still reports
    a single capture.
 8. `src/routes/inbox` lists captures with what each one did
@@ -146,6 +162,14 @@ later change. Deleting a capture deletes its log, not its records.
   desktop, except while typing in a field. Silence never stops a recording.
 - **Discard:** the × next to the pill, or swiping the pill down 60 px.
 - **Limit:** recordings stop and send at 3 minutes.
+- **Files:** the + left of the pill opens the file picker (on iPhone: Photos,
+  Camera, or Files). On a desktop, pasting a file (outside a text field) or
+  dropping one anywhere on the page also attaches it. The file shows as a chip
+  above the pill with **Send** and ×. Send sends it alone; recording instead sends
+  it with the recording as a voice note. The chip clears once the upload succeeds.
+  Spreadsheets (XLSX, XLS) aren't accepted yet: they come with statement import in
+  Budget. The iPhone Share sheet can't send here, because only an installed web
+  app can be a share target.
 - **No auto-record:** opening the app never starts a recording.
 - **Tabs on iPhone:** a page can't close a Safari tab it didn't open, and Shortcuts
   can't open a Home Screen web app, so the app runs in Safari. The action-button
@@ -202,7 +226,6 @@ Remove each point from this section as it lands, and describe the result in **Ma
 - **Search with embeddings:** embeddings arrive with the Knowledge utility, for
   queries such as "give me my startup ideas". The input is audio, so there is no
   text to embed before the call: retrieval happens only through the search tool.
-- **Every recording is sent:** there is no silence detection in the browser.
 - **Model provider:** stay on OpenRouter. Calling Google directly, so that only
   Google receives the audio, was considered and rejected on 2026-11-18.
 - **Order:** the Tasks, Knowledge, and Budget utilities. Read
@@ -231,7 +254,8 @@ Remove each point from this section as it lands, and describe the result in **Ma
   `railway link --project ccfe2f39-cd6b-4928-9337-785d58e155cb --environment production --service web`
   before `railway up`. Otherwise `railway up` creates a new project.
 - Variables on `web`: `DATABASE_URL` (a reference to Postgres), `ORIGIN`,
-  `OPENROUTER_API_KEY`, and `BODY_SIZE_LIMIT=10M`.
+  `OPENROUTER_API_KEY`, and `BODY_SIZE_LIMIT=20M` (a recording and a file in one
+  request).
 - To invite someone, run the script inside the `web` container, where the private
   database URL and `ORIGIN` are set:
   `railway ssh --service web -- node scripts/invite.ts`. This needs an SSH key on
@@ -251,7 +275,7 @@ Remove each point from this section as it lands, and describe the result in **Ma
 - Create a local account with `pnpm invite --origin http://localhost:3000` and open
   the link.
 - To test the production build, run `pnpm build`, then
-  `env ORIGIN=http://localhost:3000 PORT=3000 BODY_SIZE_LIMIT=10M node --env-file=.env build`
+  `env ORIGIN=http://localhost:3000 PORT=3000 BODY_SIZE_LIMIT=20M node --env-file=.env build`
   (also in `.claude/launch.json`).
 - To test capture without a microphone, post a WAV file to `/api/capture` with a
   session cookie, the `Origin` header, and `localDate` and `timeZone` form fields.

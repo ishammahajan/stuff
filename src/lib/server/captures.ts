@@ -5,7 +5,7 @@ import type { Account } from './auth.ts';
 import { decrypt, decryptJson, encrypt, encryptJson } from './crypto.ts';
 import { db } from './db/index.ts';
 import { captures, operations } from './db/schema.ts';
-import { interpretAudio, type ProposedQuestion, type ReplyContext } from './openrouter.ts';
+import { interpretMemo, type ProposedQuestion, type ReplyContext } from './openrouter.ts';
 import {
 	applyOperations,
 	listOperations,
@@ -15,9 +15,17 @@ import {
 	type ProposedOperation,
 	type Transaction
 } from './records.ts';
+import { keepSpeech } from './speech.ts';
 
 // 16 kHz mono 16-bit WAV is about 32 kB per second, so this allows roughly four minutes.
 export const MAX_AUDIO_BYTES = 8 * 1024 * 1024;
+export const MAX_FILE_BYTES = 10 * 1024 * 1024;
+
+/** An attached file's name and its type, as detected from its content. */
+export interface FileInfo {
+	name: string;
+	type: string;
+}
 
 /** The encrypted part of a capture. */
 interface CaptureBody {
@@ -30,10 +38,13 @@ interface CaptureBody {
 	question?: (ProposedQuestion & { answer: string | null }) | null;
 	// The capture whose open question this recording answers.
 	replyTo?: string | null;
+	// The attached file, if any. Its content is in `captures.file`.
+	file?: FileInfo | null;
 }
 
 const audioContext = (id: string) => `captures:${id}:audio`;
 const bodyContext = (id: string) => `captures:${id}:body`;
+const fileContext = (id: string) => `captures:${id}:file`;
 
 function ownedBy(account: Account, id: string) {
 	return and(eq(captures.id, id), eq(captures.userId, account.id));
@@ -47,19 +58,50 @@ export function isWav(audio: Buffer): boolean {
 	);
 }
 
-export async function createCapture(
-	account: Account,
-	audio: Buffer,
-	localDate: string,
-	timeZone: string,
-	replyTo: string | null = null
-): Promise<string> {
+/**
+ * Returns the type of an image or a PDF that the model can read, from the file's
+ * first bytes, or null for any other file.
+ */
+export function attachmentType(file: Buffer): string | null {
+	const ascii = (start: number, end: number) => file.toString('ascii', start, end);
+	if (file.length < 12) return null;
+	if (ascii(0, 5) === '%PDF-') return 'application/pdf';
+	if (file[0] === 0x89 && ascii(1, 4) === 'PNG') return 'image/png';
+	if (file[0] === 0xff && file[1] === 0xd8 && file[2] === 0xff) return 'image/jpeg';
+	if (ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP') return 'image/webp';
+	if (ascii(4, 8) === 'ftyp') {
+		const brand = ascii(8, 12);
+		if (['heic', 'heix', 'hevc', 'heim', 'heis'].includes(brand)) return 'image/heic';
+		if (['mif1', 'msf1', 'heif'].includes(brand)) return 'image/heif';
+	}
+	return null;
+}
+
+export interface NewCapture {
+	audio: Buffer | null;
+	file: { data: Buffer; info: FileInfo } | null;
+	localDate: string;
+	timeZone: string;
+	/** The capture whose open question this one answers. */
+	replyTo: string | null;
+}
+
+export async function createCapture(account: Account, capture: NewCapture): Promise<string> {
 	const id = randomUUID();
-	const body: CaptureBody = { localDate, timeZone, transcript: null, error: null, replyTo };
+	const { localDate, timeZone, replyTo } = capture;
+	const body: CaptureBody = {
+		localDate,
+		timeZone,
+		transcript: null,
+		error: null,
+		replyTo,
+		file: capture.file?.info ?? null
+	};
 	await db.insert(captures).values({
 		id,
 		userId: account.id,
-		audio: encrypt(account.key, audio, audioContext(id)),
+		audio: capture.audio && encrypt(account.key, capture.audio, audioContext(id)),
+		file: capture.file && encrypt(account.key, capture.file.data, fileContext(id)),
 		body: encryptJson(account.key, body, bodyContext(id))
 	});
 	return id;
@@ -104,7 +146,7 @@ export async function resumePendingCaptures(account: Account): Promise<void> {
 			and(
 				eq(captures.userId, account.id),
 				eq(captures.status, 'pending'),
-				isNotNull(captures.audio)
+				or(isNotNull(captures.audio), isNotNull(captures.file))
 			)
 		);
 	for (const { id } of rows) processInBackground(account, id);
@@ -130,7 +172,12 @@ async function finishCapture(
 		await db.transaction(async (tx) => {
 			const updated = await tx
 				.update(captures)
-				.set({ status, audio: null, body: encryptJson(account.key, body, bodyContext(id)) })
+				.set({
+					status,
+					audio: null,
+					file: null,
+					body: encryptJson(account.key, body, bodyContext(id))
+				})
 				.where(and(ownedBy(account, id), inArray(captures.status, ['pending', 'failed'])))
 				.returning({ id: captures.id });
 			if (updated.length === 0) throw new AlreadyDone();
@@ -208,14 +255,25 @@ export async function answerQuestion(
 
 async function interpretCapture(account: Account, id: string): Promise<void> {
 	const [row] = await db
-		.select({ audio: captures.audio, body: captures.body })
+		.select({ audio: captures.audio, file: captures.file, body: captures.body })
 		.from(captures)
 		.where(ownedBy(account, id))
 		.limit(1);
-	if (!row?.audio) return;
+	if (!row || (!row.audio && !row.file)) return;
 
 	const body = decryptJson<CaptureBody>(account.key, row.body, bodyContext(id));
-	const audio = decrypt(account.key, row.audio, audioContext(id));
+	const file =
+		row.file && body.file
+			? { data: decrypt(account.key, row.file, fileContext(id)), info: body.file }
+			: null;
+	const recorded = row.audio && decrypt(account.key, row.audio, audioContext(id));
+	const audio = recorded && (await findSpeech(id, recorded));
+
+	// Nothing but noise: there is nothing to send to the model.
+	if (!audio && !file) {
+		await finishCapture(account, id, { ...body, transcript: '', question: null, error: null }, [], null);
+		return;
+	}
 
 	// A reply to a question that was settled meanwhile is filed as a plain memo.
 	const parent = body.replyTo ? await openQuestion(db, account, body.replyTo) : null;
@@ -230,7 +288,7 @@ async function interpretCapture(account: Account, id: string): Promise<void> {
 	let result;
 	try {
 		const all = await loadRecords(account);
-		result = await interpretAudio(audio, {
+		result = await interpretMemo({ audio, file }, {
 			localDate: body.localDate,
 			timeZone: body.timeZone,
 			snapshot: snapshot(all),
@@ -256,6 +314,19 @@ async function interpretCapture(account: Account, id: string): Promise<void> {
 	);
 }
 
+/**
+ * Returns the speech in a recording without long pauses, or null when it has none.
+ * If detection itself fails, the whole recording is used.
+ */
+async function findSpeech(id: string, wav: Buffer): Promise<Buffer | null> {
+	try {
+		return await keepSpeech(wav);
+	} catch (error) {
+		console.error(`Speech detection failed for capture ${id}:`, error);
+		return wav;
+	}
+}
+
 const viewColumns = {
 	id: captures.id,
 	createdAt: captures.createdAt,
@@ -274,6 +345,7 @@ function toView(
 		createdAt: row.createdAt,
 		status: row.status,
 		transcript: body.transcript,
+		fileName: body.file?.name ?? null,
 		operations,
 		question: body.question
 			? {

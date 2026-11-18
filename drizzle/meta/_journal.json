@@ -36,6 +36,13 @@
       "when": 1794954524020,
       "tag": "0004_skinny_mojo",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1795045384892,
+      "tag": "0005_colossal_onslaught",
+      "breakpoints": true
     }
   ]
 }
