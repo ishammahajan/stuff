@@ -1,12 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import { and, asc, eq, gt, inArray, isNull } from 'drizzle-orm';
 import {
+	addDays,
+	daysBetween,
+	describeRepeat,
 	ITEM_TYPES,
+	nextOccurrence,
+	withDefaults,
 	type Item,
 	type ItemFields,
 	type ItemType,
 	type OperationKind,
-	type OperationView
+	type OperationView,
+	type TaskView
 } from '../items.ts';
 import type { Account } from './auth.ts';
 import { decryptJson, encryptJson } from './crypto.ts';
@@ -18,6 +24,7 @@ export type ProposedOperation =
 	| { action: 'create'; type: ItemType; fields: ItemFields }
 	| { action: 'update'; id: string; changes: Partial<ItemFields> }
 	| { action: 'complete'; id: string }
+	| { action: 'reopen'; id: string }
 	| { action: 'delete'; id: string };
 
 /** A decrypted record. */
@@ -65,7 +72,7 @@ function decryptRecord(account: Account, row: RecordRow): StoredRecord {
 		createdAt: row.createdAt,
 		updatedAt: row.updatedAt,
 		completedAt: row.completedAt,
-		fields: decryptJson<ItemFields>(account.key, row.body, recordContext(row.id))
+		fields: withDefaults(decryptJson<ItemFields>(account.key, row.body, recordContext(row.id)))
 	};
 }
 
@@ -80,7 +87,7 @@ function toState(record: StoredRecord): RecordState {
 }
 
 function toItem(state: RecordState): Item {
-	return { type: state.type, ...state.fields, completed: state.completedAt !== null };
+	return { type: state.type, ...withDefaults(state.fields), completed: state.completedAt !== null };
 }
 
 /** Makes the stored record match `state`: inserts, updates, or deletes it. */
@@ -120,7 +127,8 @@ const SNAPSHOT_LIMITS: Record<ItemType, number> = { task: 50, note: 20, expense:
 
 /** A short form of a record for the model. Empty fields are left out. */
 function summary(record: StoredRecord, detailsLimit?: number) {
-	const { title, details, amount, currency, date, tags } = record.fields;
+	const { title, details, amount, currency, date, tags, important, repeat, remindAt } =
+		record.fields;
 	return {
 		id: record.id,
 		type: record.type,
@@ -130,6 +138,9 @@ function summary(record: StoredRecord, detailsLimit?: number) {
 		...(currency ? { currency } : {}),
 		...(date ? { date } : {}),
 		...(tags.length ? { tags } : {}),
+		...(important ? { important } : {}),
+		...(repeat ? { repeat: describeRepeat(repeat) } : {}),
+		...(remindAt ? { remindAt } : {}),
 		...(record.completedAt ? { completed: true } : {})
 	};
 }
@@ -148,6 +159,15 @@ export function snapshot(all: StoredRecord[]): string {
 		for (const record of recent) lines.push(JSON.stringify(summary(record, 100)));
 	}
 	return lines.join('\n');
+}
+
+/** Lists the given records, one JSON object per line, skipping IDs the account lacks. */
+export function describeRecords(all: StoredRecord[], ids: string[]): string {
+	const wanted = new Set(ids);
+	return all
+		.filter((record) => wanted.has(record.id))
+		.map((record) => JSON.stringify(summary(record)))
+		.join('\n');
 }
 
 const SEARCH_LIMIT = 20;
@@ -175,18 +195,22 @@ export function searchRecords(all: StoredRecord[], query: string, type: ItemType
 }
 
 /**
- * Applies a capture's operations inside the caller's transaction and logs each
- * one. Operations on a record the account doesn't have, and a second operation on
- * the same record, are skipped. Returns how many were applied.
+ * Applies operations inside the caller's transaction and logs each one, under the
+ * capture that asked for them, or under none for a tap on a utility screen.
+ * Operations on a record the account doesn't have, and a second operation on the
+ * same record, are skipped. `today` is the user's local date, which places the next
+ * occurrence of a repeating task. Returns the IDs of the logged operations.
  */
 export async function applyOperations(
 	tx: Transaction,
 	account: Account,
-	captureId: string,
-	proposed: ProposedOperation[]
-): Promise<number> {
+	captureId: string | null,
+	proposed: ProposedOperation[],
+	today: string
+): Promise<string[]> {
 	const start = Date.now();
 	const touched = new Set<string>();
+	const logged: string[] = [];
 	for (const operation of proposed) {
 		// Each operation gets its own millisecond, so the log keeps their order.
 		const now = new Date(start + touched.size);
@@ -201,6 +225,9 @@ export async function applyOperations(
 			if (!row) continue;
 			before = toState(decryptRecord(account, row));
 			if (operation.action === 'complete' && (before.type !== 'task' || before.completedAt)) {
+				continue;
+			}
+			if (operation.action === 'reopen' && (before.type !== 'task' || !before.completedAt)) {
 				continue;
 			}
 		}
@@ -223,8 +250,29 @@ export async function applyOperations(
 					updatedAt: now.toISOString()
 				};
 				break;
-			case 'complete':
-				after = { ...before!, completedAt: now.toISOString(), updatedAt: now.toISOString() };
+			case 'complete': {
+				const { repeat, date, remindAt } = before!.fields;
+				if (repeat) {
+					// A repeating task stays open and moves to its next date, and its
+					// reminder moves by the same number of days.
+					const next = nextOccurrence(date, repeat, today);
+					const shift = daysBetween(date ?? today, next);
+					after = {
+						...before!,
+						fields: {
+							...before!.fields,
+							date: next,
+							remindAt: remindAt && addDays(remindAt, shift)
+						},
+						updatedAt: now.toISOString()
+					};
+				} else {
+					after = { ...before!, completedAt: now.toISOString(), updatedAt: now.toISOString() };
+				}
+				break;
+			}
+			case 'reopen':
+				after = { ...before!, completedAt: null, updatedAt: now.toISOString() };
 				break;
 			case 'delete':
 				after = null;
@@ -244,8 +292,54 @@ export async function applyOperations(
 			body: encryptJson(account.key, body, operationContext(operationId))
 		});
 		touched.add(id);
+		logged.push(operationId);
 	}
-	return touched.size;
+	return logged;
+}
+
+// Completed tasks the Tasks screen lists, newest first, beyond the open ones.
+const COMPLETED_LIMIT = 100;
+
+/** Lists the open tasks and the most recently completed ones. */
+export async function listTasks(account: Account): Promise<TaskView[]> {
+	const rows = await db
+		.select()
+		.from(records)
+		.where(and(eq(records.userId, account.id), eq(records.type, 'task')));
+	const tasks = rows.map((row) => decryptRecord(account, row));
+	const open = tasks.filter((task) => !task.completedAt);
+	const completed = tasks
+		.filter((task) => task.completedAt)
+		.sort((a, b) => b.completedAt!.getTime() - a.completedAt!.getTime())
+		.slice(0, COMPLETED_LIMIT);
+	return [...open, ...completed].map((task) => ({
+		id: task.id,
+		...task.fields,
+		completedAt: task.completedAt?.toISOString() ?? null
+	}));
+}
+
+/**
+ * Completes, reopens, or deletes one of the account's tasks from a tap. Returns the
+ * logged operation's ID, or null when the task is gone or already in that state.
+ */
+export async function changeTask(
+	account: Account,
+	id: string,
+	action: 'complete' | 'reopen' | 'delete',
+	today: string
+): Promise<string | null> {
+	if (!UUID.test(id)) return null;
+	return db.transaction(async (tx) => {
+		const [row] = await tx
+			.select({ type: records.type })
+			.from(records)
+			.where(ownedRecord(account, id))
+			.limit(1);
+		if (row?.type !== 'task') return null;
+		const [operationId] = await applyOperations(tx, account, null, [{ action, id }], today);
+		return operationId ?? null;
+	});
 }
 
 /**
@@ -313,7 +407,9 @@ export async function listOperations(
 			previous: row.kind === 'update' && body.before ? toItem(body.before) : null,
 			undone: row.undoneAt !== null
 		};
-		byCapture.set(row.captureId, [...(byCapture.get(row.captureId) ?? []), view]);
+		// Only captures' operations are selected, so the capture ID is set.
+		const captureId = row.captureId!;
+		byCapture.set(captureId, [...(byCapture.get(captureId) ?? []), view]);
 	}
 	return byCapture;
 }

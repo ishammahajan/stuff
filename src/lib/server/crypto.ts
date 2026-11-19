@@ -74,9 +74,12 @@ export function keyFromSecret(secret: string, salt: Buffer): Promise<Buffer> {
 	});
 }
 
-/** Derives a key from a session token. Tokens are random, so a fast derivation is enough. */
-export function keyFromToken(token: string): Buffer {
-	return Buffer.from(hkdfSync('sha256', token, Buffer.alloc(0), 'stuff session key', KEY_BYTES));
+/**
+ * Derives a key from a random token, such as a session token. Tokens are random, so
+ * a fast derivation is enough. `purpose` keeps keys for different uses apart.
+ */
+export function keyFromToken(token: string, purpose = 'stuff session key'): Buffer {
+	return Buffer.from(hkdfSync('sha256', token, Buffer.alloc(0), purpose, KEY_BYTES));
 }
 
 export function sha256Hex(value: string): string {

@@ -1,7 +1,7 @@
 // The latest captures, shared by the pill (which reports new ones) and the home
 // screen's recent strip (which shows them). Loaded from the client, because the
 // cached dashboard HTML can be stale.
-import type { CaptureView } from './items.ts';
+import { localDate, type CaptureView } from './items.ts';
 
 const POLL_MS = 2000;
 
@@ -39,7 +39,7 @@ class Recent {
 	/** Picks an answer to a capture's question, or dismisses it when `option` is null. */
 	async answer(captureId: string, option: number | null): Promise<void> {
 		if (this.replyTo?.id === captureId) this.replyTo = null;
-		await this.#post(`/api/captures/${captureId}/answer`, { option }, 'Answer');
+		await this.#post(`/api/captures/${captureId}/answer`, { option, localDate: localDate() }, 'Answer');
 	}
 
 	async #post(url: string, body: unknown, action: string): Promise<void> {

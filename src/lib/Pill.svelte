@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
+	import { attached, type AttachedItem } from '#lib/attached.svelte.ts';
 	import { toWav } from '#lib/audio.ts';
+	import { localDate } from '#lib/items.ts';
 	import { recent } from '#lib/recent.svelte.ts';
 
 	// Recordings stop and send at this length.
@@ -26,6 +28,8 @@
 		replyTo: string | null;
 		/** The file sent along with this recording. */
 		file: File | null;
+		/** The records dragged onto the pill for this recording. */
+		items: AttachedItem[];
 	}
 
 	let phase = $state<Phase>('idle');
@@ -36,6 +40,7 @@
 	let attachment = $state<File | null>(null);
 	let canvas: HTMLCanvasElement;
 	let picker: HTMLInputElement;
+	let pill: HTMLButtonElement;
 
 	let session: Session | null = null;
 	let cancelStart = false;
@@ -44,12 +49,6 @@
 
 	// The press in progress, from the pointer or the space bar.
 	let press: { startedRecording: boolean; y: number | null } | null = null;
-
-	function localDate(): string {
-		const now = new Date();
-		const pad = (value: number) => String(value).padStart(2, '0');
-		return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-	}
 
 	async function start() {
 		phase = 'starting';
@@ -85,14 +84,20 @@
 			startedAt: performance.now(),
 			discarded: false,
 			replyTo: recent.replyTo?.id ?? null,
-			file: attachment
+			file: attachment,
+			items: attached.items
 		};
 		recorder.ondataavailable = (event) => {
 			if (event.data.size > 0) chunks.push(event.data);
 		};
 		recorder.onstop = () => {
 			if (!current.discarded) {
-				upload(new Blob(chunks, { type: recorder.mimeType }), current.file, current.replyTo);
+				upload(
+					new Blob(chunks, { type: recorder.mimeType }),
+					current.file,
+					current.replyTo,
+					current.items
+				);
 			}
 		};
 		recorder.start();
@@ -125,8 +130,16 @@
 		phase = 'idle';
 	}
 
-	/** Sends a recording, a file, or both. The file and the reply stay set if it fails. */
-	async function upload(recording: Blob | null, file: File | null, replyTo: string | null) {
+	/**
+	 * Sends a recording, a file, or both, with the records they are about. The file,
+	 * the reply, and the records stay set if it fails.
+	 */
+	async function upload(
+		recording: Blob | null,
+		file: File | null,
+		replyTo: string | null,
+		items: AttachedItem[]
+	) {
 		uploads += 1;
 		try {
 			const form = new FormData();
@@ -135,10 +148,13 @@
 			form.set('localDate', localDate());
 			form.set('timeZone', Intl.DateTimeFormat().resolvedOptions().timeZone);
 			if (replyTo) form.set('replyTo', replyTo);
+			if (items.length) form.set('items', items.map((item) => item.id).join(','));
+			if (attached.screen) form.set('screen', attached.screen);
 			const response = await fetch('/api/capture', { method: 'POST', body: form });
 			if (response.ok) {
 				if (replyTo && recent.replyTo?.id === replyTo) recent.replyTo = null;
 				if (file && attachment === file) attachment = null;
+				if (items.length && attached.items === items) attached.items = [];
 				recent.refresh();
 			} else {
 				const body = await response.json().catch(() => null);
@@ -305,6 +321,18 @@
 		if (phase === 'idle') drawFlat();
 	});
 
+	// Lets a utility screen find the pill and start a recording when items are dropped on it.
+	$effect(() => {
+		attached.pill = pill;
+		attached.record = () => {
+			if (phase === 'idle') start();
+		};
+		return () => {
+			attached.pill = null;
+			attached.record = null;
+		};
+	});
+
 	onDestroy(() => {
 		if (session) finish(false);
 	});
@@ -322,11 +350,23 @@
 		<p class="chip">
 			<span>{attachment.name}</span>
 			{#if phase === 'idle'}
-				<button class="send" onclick={() => upload(null, attachment, recent.replyTo?.id ?? null)}
+				<button
+					class="send"
+					onclick={() => upload(null, attachment, recent.replyTo?.id ?? null, attached.items)}
 					>Send</button
 				>
 			{/if}
 			<button aria-label="Remove file" onclick={() => (attachment = null)}>×</button>
+		</p>
+	{/if}
+	{#if attached.items.length}
+		<p class="chip">
+			<span
+				>{attached.items.length === 1
+					? attached.items[0].title
+					: `${attached.items.length} items: ${attached.items.map((item) => item.title).join(', ')}`}</span
+			>
+			<button aria-label="Remove the selected items" onclick={() => (attached.items = [])}>×</button>
 		</p>
 	{/if}
 	{#if recent.replyTo}
@@ -343,8 +383,10 @@
 		{/if}
 		<input bind:this={picker} type="file" accept={FILE_TYPES} hidden onchange={onpicked} />
 		<button
+			bind:this={pill}
 			class="pill"
 			class:live={phase !== 'idle'}
+			class:target={attached.hovering}
 			aria-label={phase === 'idle' ? 'Record' : 'Stop and send'}
 			title="Tap to record, or hold to talk"
 			{onpointerdown}
@@ -407,6 +449,14 @@
 	.pill.live {
 		border-color: var(--danger);
 		color: var(--danger);
+	}
+
+	/* Items are being dragged over the pill. */
+	.pill.target {
+		border-color: var(--accent);
+		color: var(--accent);
+		outline: 3px solid color-mix(in srgb, var(--accent) 30%, transparent);
+		transform: scale(1.06);
 	}
 
 	canvas {

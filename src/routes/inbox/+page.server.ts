@@ -5,6 +5,7 @@ import {
 	processCapture,
 	resumePendingCaptures
 } from '#lib/server/captures.ts';
+import { refreshFeedQuietly } from '#lib/server/calendar.ts';
 import { undoOperation } from '#lib/server/records.ts';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -32,6 +33,7 @@ export const actions: Actions = {
 		if (!id) return fail(400);
 		const problem = await undoOperation(locals.account!, id);
 		if (problem) return fail(409, { message: problem });
+		await refreshFeedQuietly(locals.account!);
 	},
 	delete: async ({ request, locals }) => {
 		const id = await captureId(request);

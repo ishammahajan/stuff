@@ -8,14 +8,18 @@ import {
 	MAX_FILE_BYTES,
 	processInBackground
 } from '#lib/server/captures.ts';
+import { ITEM_TYPES, type ItemType } from '#lib/items.ts';
 import type { RequestHandler } from './$types';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MAX_ITEMS = 50;
 
 /**
  * Accepts a multipart form with `localDate` (YYYY-MM-DD) and `timeZone` (an IANA
  * name), and at least one of `audio` (a WAV file) and `file` (an image or a PDF).
- * `replyTo` is optional: the ID of a capture whose open question this answers.
+ * Optional fields: `replyTo`, the ID of a capture whose open question this answers;
+ * `items`, comma-separated IDs of records the speaker selected; and `screen`, the
+ * record type of the utility screen it was recorded on.
  * Saves the capture, starts interpreting it in the background, and responds with
  * its ID right away. Poll `GET /api/capture/{id}` to learn the outcome.
  */
@@ -60,7 +64,23 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		file = { data, info: { name, type } };
 	}
 
-	const id = await createCapture(account, { audio, file, localDate, timeZone, replyTo });
+	// Selected records, as comma-separated IDs. Ownership is checked when filing.
+	const itemsField = form.get('items');
+	const items = typeof itemsField === 'string' ? itemsField.split(',').filter((id) => UUID.test(id)) : [];
+	if (items.length > MAX_ITEMS) error(400, `Select at most ${MAX_ITEMS} items.`);
+
+	const screenField = form.get('screen');
+	const screen = ITEM_TYPES.includes(screenField as ItemType) ? (screenField as ItemType) : null;
+
+	const id = await createCapture(account, {
+		audio,
+		file,
+		localDate,
+		timeZone,
+		replyTo,
+		items,
+		screen
+	});
 	processInBackground(account, id);
 	return json({ id }, { status: 202 });
 };

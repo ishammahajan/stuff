@@ -1,13 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, exists, inArray, isNotNull, ne, or, sql } from 'drizzle-orm';
-import type { CaptureStatus, CaptureView, OperationView } from '../items.ts';
+import type { CaptureStatus, CaptureView, ItemType, OperationView } from '../items.ts';
 import type { Account } from './auth.ts';
+import { refreshFeedQuietly } from './calendar.ts';
 import { decrypt, decryptJson, encrypt, encryptJson } from './crypto.ts';
 import { db } from './db/index.ts';
 import { captures, operations } from './db/schema.ts';
 import { interpretMemo, type ProposedQuestion, type ReplyContext } from './openrouter.ts';
 import {
 	applyOperations,
+	describeRecords,
 	listOperations,
 	loadRecords,
 	searchRecords,
@@ -40,6 +42,10 @@ interface CaptureBody {
 	replyTo?: string | null;
 	// The attached file, if any. Its content is in `captures.file`.
 	file?: FileInfo | null;
+	// The records the speaker dragged onto the pill, by ID.
+	items?: string[];
+	// The utility screen the memo was recorded on, by its record type.
+	screen?: ItemType | null;
 }
 
 const audioContext = (id: string) => `captures:${id}:audio`;
@@ -84,18 +90,23 @@ export interface NewCapture {
 	timeZone: string;
 	/** The capture whose open question this one answers. */
 	replyTo: string | null;
+	/** IDs of the records the speaker selected. They are checked when filing. */
+	items: string[];
+	screen: ItemType | null;
 }
 
 export async function createCapture(account: Account, capture: NewCapture): Promise<string> {
 	const id = randomUUID();
-	const { localDate, timeZone, replyTo } = capture;
+	const { localDate, timeZone, replyTo, items, screen } = capture;
 	const body: CaptureBody = {
 		localDate,
 		timeZone,
 		transcript: null,
 		error: null,
 		replyTo,
-		file: capture.file?.info ?? null
+		file: capture.file?.info ?? null,
+		items,
+		screen
 	};
 	await db.insert(captures).values({
 		id,
@@ -181,9 +192,10 @@ async function finishCapture(
 				.where(and(ownedBy(account, id), inArray(captures.status, ['pending', 'failed'])))
 				.returning({ id: captures.id });
 			if (updated.length === 0) throw new AlreadyDone();
-			await applyOperations(tx, account, id, proposed);
+			await applyOperations(tx, account, id, proposed, body.localDate);
 			if (answers) await closeQuestion(tx, account, answers, 'Answered by voice');
 		});
+		if (proposed.length > 0) await refreshFeedQuietly(account);
 	} catch (error) {
 		if (!(error instanceof AlreadyDone)) throw error;
 	}
@@ -233,24 +245,27 @@ async function closeQuestion(
 
 /**
  * Settles a capture's open question: applies the chosen option's operations, or
- * changes nothing when `option` is null (dismissed). Returns a message when the
- * question is no longer open.
+ * changes nothing when `option` is null (dismissed). `today` is the user's local
+ * date. Returns a message when the question is no longer open.
  */
 export async function answerQuestion(
 	account: Account,
 	id: string,
-	option: number | null
+	option: number | null,
+	today: string
 ): Promise<string | null> {
-	return db.transaction(async (tx) => {
+	const problem = await db.transaction(async (tx) => {
 		const body = await openQuestion(tx, account, id);
 		const chosen = option === null ? null : body?.question?.options[option];
 		if (!body || (option !== null && !chosen)) return 'This question is no longer open.';
 		const closed = await closeQuestion(tx, account, id, chosen ? chosen.label : 'Dismissed');
 		if (!closed) return 'This question is no longer open.';
 		// The operations are checked again against the account's records as they are now.
-		if (chosen) await applyOperations(tx, account, id, chosen.operations);
+		if (chosen) await applyOperations(tx, account, id, chosen.operations, today);
 		return null;
 	});
+	if (!problem && option !== null) await refreshFeedQuietly(account);
+	return problem;
 }
 
 async function interpretCapture(account: Account, id: string): Promise<void> {
@@ -293,7 +308,9 @@ async function interpretCapture(account: Account, id: string): Promise<void> {
 			timeZone: body.timeZone,
 			snapshot: snapshot(all),
 			search: (query, type) => searchRecords(all, query, type),
-			reply
+			reply,
+			screen: body.screen ?? null,
+			selected: describeRecords(all, body.items ?? [])
 		});
 	} catch (error) {
 		const failed = { ...body, error: error instanceof Error ? error.message : String(error) };

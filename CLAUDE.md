@@ -43,6 +43,9 @@ Each user's data is private to them and encrypted at rest. The rules:
   request started. Nothing can decrypt a user's data while they are away, so work
   that needs the key and was interrupted resumes on the user's next request (see
   `GET /api/capture/{id}` and the inbox load).
+- **One exception, chosen by the user:** a calendar feed (see **Reminders**) keeps
+  a copy of task titles and times that its link's token can decrypt. The token
+  unlocks only that copy, never the data key.
 
 The parts:
 
@@ -61,8 +64,8 @@ The parts:
   - Each session row stores the data key wrapped by a key derived from the cookie
     token. The database keeps only the token's SHA-256.
 - `src/hooks.server.ts`: sets `locals.account` (`{ id, key }`) from the session
-  cookie. Everything except `/login`, `/join/*`, and `/recover` requires it: pages
-  redirect to `/login`, and `/api/*` returns 401 JSON.
+  cookie. Everything except `/login`, `/join/*`, `/recover`, and `/calendar/*`
+  requires it: pages redirect to `/login`, and `/api/*` returns 401 JSON.
 - Sign-up is by invite only. `pnpm invite` (`scripts/invite.ts`) prints a one-time
   link to `/join/<token>` that is valid for 7 days. The invitee chooses their own
   password, and then sees their recovery code once.
@@ -77,11 +80,13 @@ The parts:
    `MediaRecorder`. `src/lib/audio.ts` converts the recording to 16 kHz mono 16-bit
    WAV. An attached file is sent as it is.
 2. `POST /api/capture` (`src/routes/api/capture/+server.ts`) takes a recording, a
-   file, or both. It validates them, stores them encrypted in `captures.audio` and
+   file, or both, plus optional `items` (IDs of records dragged onto the pill) and
+   `screen` (the record type of the utility screen it was recorded on). It
+   validates them, stores them encrypted in `captures.audio` and
    `captures.file`, starts processing, and returns `202 {id}`. A file's type comes
    from its first bytes (`attachmentType`): PNG, JPEG, WebP, HEIC, or PDF, up to
-   10 MB. The local date, time zone, file name and type, transcript, and error live
-   in the encrypted `captures.body` JSON.
+   10 MB. The local date, time zone, file name and type, selected items, screen,
+   transcript, and error live in the encrypted `captures.body` JSON.
 3. `src/lib/server/captures.ts` processes in the background with the account's key.
    It keeps an in-process set of captures in progress, so one capture never gets
    two model calls. After a restart, a pending capture resumes when its owner polls
@@ -98,13 +103,15 @@ The parts:
 4. Before the call, all of the user's records are loaded and decrypted
    (`loadRecords` in `src/lib/server/records.ts`). `snapshot` puts a capped list in
    the prompt: up to 50 open tasks, and the latest 20 notes, 20 expenses, and 10
-   income records. The prompt says the list is partial.
+   income records. The prompt says the list is partial. Records the user selected
+   (`describeRecords`) are listed separately as what "this" or "these" means, and
+   the screen leans the model toward that utility's type.
 5. `src/lib/server/openrouter.ts` (`interpretMemo`) sends the audio, the file (an
    image as `image_url`, a PDF as `file`), and instructions to
    `google/gemini-3.8-flash` on OpenRouter with two tools, in a loop of at most four
    calls. `search_records` runs `searchRecords`, a keyword match over the decrypted
    records. `file_memo` ends the loop with the transcript and a list of operations:
-   create, update, complete, or delete by record ID. The last call forces
+   create, update, complete, reopen, or delete by record ID. The last call forces
    `file_memo`. The instructions tell the model to file only speech meant for the
    app and to ignore background speech, such as a TV. A file is filed by what it
    holds, such as a receipt as an expense; a file with many entries, such as a bank
@@ -147,9 +154,59 @@ inbox:
 Item types and the shared shapes live in `src/lib/items.ts`.
 
 **Undo:** every applied operation is logged in `operations` with the record's
-encrypted state before and after. `undoOperation` writes the before state back.
+encrypted state before and after, including changes made by a tap on a utility
+screen, which have no `capture_id`. `undoOperation` writes the before state back.
 Only the latest change to a record can be undone, so an undo never overwrites a
 later change. Deleting a capture deletes its log, not its records.
+`applyOperations` takes the user's local date (from the capture, or from the
+client for an answer or a tap) to place a repeating task's next date.
+
+### Tasks
+
+- Tasks are `records` of type `task`. Besides the shared fields they use
+  `important` (a flag), `repeat` (`{ every, unit }`, unit day, week, month, or
+  year), and `remindAt` (a local `YYYY-MM-DDTHH:MM`). Records saved before a field
+  existed get its default through `withDefaults` in `src/lib/items.ts`.
+- Completing a repeating task doesn't mark it done: it moves its date to the next
+  occurrence after today (`nextOccurrence`), counted from its due date, and moves
+  `remindAt` by the same number of days.
+- `src/routes/tasks` lists open tasks in Overdue, Today, Upcoming, and No date,
+  important first, then by date. The grouping runs in the browser, which knows the
+  local date. The page reloads when a capture finishes.
+- Taps: the circle completes or reopens a task, and × deletes it.
+  `POST /api/tasks/{id}` (`changeTask`) logs each as an operation. Delete and a
+  repeating completion show an Undo.
+- A completed task stays in place, struck through, for 10 minutes, then moves to
+  the collapsed Archive. This follows from `completed_at`; nothing is stored. The
+  screen loads all open tasks and the latest 100 completed ones.
+- **Drag to edit:** tapping a task selects it. Dragging a selected task drags the
+  whole selection; dropping it on the pill (or pressing "Talk about them")
+  attaches the tasks as a chip and starts a tap-style recording. Selected rows
+  get `touch-action: none` so the drag works on a touch screen. The screen and
+  the pill share `src/lib/attached.svelte.ts`: the attached items, the open
+  screen, and the pill element for hit-testing the drop.
+
+### Reminders
+
+iOS gives a Safari web app no push notifications, so reminders ring through a
+calendar subscription. The phone's Calendar fetches a feed and rings its alarms.
+
+- `src/lib/server/calendar.ts` builds an iCalendar feed with one 15-minute event
+  and alarm per open task that has a time: `remindAt` if set, otherwise 9:00
+  (`DUE_HOUR`) on its date. Times are floating (local), so they ring in the
+  phone's time zone. Events carry only the task title.
+- `calendar_feeds` (one row per user) holds a random feed key wrapped twice: by
+  the data key (`key_by_account`), and by an HKDF key from the link's token
+  (`key_by_token`). The database keeps only the token's SHA-256. `body` is the
+  feed, encrypted with the feed key.
+- The feed copy is rewritten (`refreshFeedQuietly`) after every change to
+  records, while the request still holds the data key: after filing a capture,
+  answering a question, a tap, and an undo. A failure is logged and doesn't fail
+  the change.
+- `GET /calendar/<token>.ics` is public and serves the feed with the token alone,
+  or 404.
+- `/tasks/calendar` makes the link (shown once, with a `webcal:` subscribe button
+  and setup steps), replaces it (the old link stops working), or turns it off.
 
 ### Capture interface
 
@@ -192,8 +249,8 @@ to be fresh. Fetch that data from the client instead, as the recent strip does.
 ### Data
 
 - `src/lib/server/db/schema.ts` defines the tables: `users`, `invites`, `sessions`,
-  `captures`, `records`, and `operations`. Each encrypted column notes its context
-  string.
+  `captures`, `records`, `operations`, and `calendar_feeds`. Each encrypted column
+  notes its context string.
 - `records` is shared by all utilities. Each row has a user, a type, timestamps,
   `completed_at` for tasks, and an encrypted body (`ItemFields`). Totals and
   searches run in memory after decryption. A utility may get its own table when
@@ -228,16 +285,13 @@ Remove each point from this section as it lands, and describe the result in **Ma
   text to embed before the call: retrieval happens only through the search tool.
 - **Model provider:** stay on OpenRouter. Calling Google directly, so that only
   Google receives the audio, was considered and rejected on 2026-11-18.
-- **Order:** the Tasks, Knowledge, and Budget utilities. Read
+- **Order:** the Knowledge and Budget utilities (Tasks is built). Read
   `~/dev/projects/budgeting` before building Budget.
 
 ### Capture interface, remaining parts
 
-- **Drag to edit:** on a utility screen, dragging one or more selected items onto
-  the pill attaches them as chips and starts a tap-style recording. The model
-  receives them as the items being talked about. Recording on a utility's screen
-  also leans the model toward that utility. Build this with the first utility
-  screen.
+- **Drag to edit on other screens:** Tasks has it (see **Tasks**). Knowledge and
+  Budget reuse `attached.svelte.ts` the same way.
 - **Home screen:** later, today's tasks and the month's spending join the tiles,
   and the recent strip also shows answers to questions.
 - **Not wanted for now:** per-user spending caps. The OpenRouter key has a daily

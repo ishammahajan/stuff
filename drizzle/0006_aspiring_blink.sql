@@ -1,0 +1,1 @@
+ALTER TABLE "operations" ALTER COLUMN "capture_id" DROP NOT NULL;

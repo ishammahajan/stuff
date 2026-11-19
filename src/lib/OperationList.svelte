@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
-	import type { Item, OperationKind, OperationView } from './items.ts';
+	import { describeRepeat, type Item, type OperationKind, type OperationView } from './items.ts';
 
 	interface Props {
 		operations: OperationView[];
@@ -14,6 +14,7 @@
 		create: 'Added',
 		update: 'Changed',
 		complete: 'Done',
+		reopen: 'Reopened',
 		delete: 'Deleted'
 	};
 
@@ -25,7 +26,15 @@
 	function meta(operation: OperationView): string {
 		const { item, previous } = operation;
 		const renamed = previous && previous.title !== item.title ? `was “${previous.title}”` : '';
-		return [renamed, money(item), item.date, ...item.tags.map((tag) => `#${tag}`)]
+		return [
+			renamed,
+			item.important ? 'Important' : '',
+			money(item),
+			item.date,
+			item.repeat ? describeRepeat(item.repeat) : '',
+			item.remindAt ? `Reminder ${item.remindAt.replace('T', ' ')}` : '',
+			...item.tags.map((tag) => `#${tag}`)
+		]
 			.filter(Boolean)
 			.join(' · ');
 	}

@@ -85,7 +85,30 @@ export const records = pgTable(
 	(table) => [index('records_user_type_idx').on(table.userId, table.type)]
 );
 
-// Every change a capture made to the records, so each one can be undone.
+// A user's calendar subscription of task reminders. Apple fetches it while the user
+// is away, when the data key isn't available, so the feed has its own key and a
+// ready-made copy of the reminders. The feed key is wrapped twice: by the data key,
+// so a request can rewrite the copy, and by the link's token, so a fetch can read
+// it. The token unlocks only this copy, never the data key.
+export const calendarFeeds = pgTable('calendar_feeds', {
+	userId: uuid('user_id')
+		.primaryKey()
+		.references(() => users.id, { onDelete: 'cascade' }),
+	// SHA-256 of the link's token, which is only ever in the link.
+	tokenHash: text('token_hash').notNull().unique(),
+	createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+	updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+	// The feed key, wrapped by the data key. Context: `calendar_feeds:<user id>:account-key`.
+	keyByAccount: bytea('key_by_account').notNull(),
+	// The feed key, wrapped by a key derived from the token.
+	// Context: `calendar_feeds:<user id>:token-key`.
+	keyByToken: bytea('key_by_token').notNull(),
+	// The iCalendar text, encrypted with the feed key. Context: `calendar_feeds:<user id>:body`.
+	body: bytea('body').notNull()
+});
+
+// Every change made to the records, by a capture or by a tap on a utility screen,
+// so each one can be undone.
 export const operations = pgTable(
 	'operations',
 	{
@@ -94,9 +117,8 @@ export const operations = pgTable(
 		userId: uuid('user_id')
 			.notNull()
 			.references(() => users.id, { onDelete: 'cascade' }),
-		captureId: uuid('capture_id')
-			.notNull()
-			.references(() => captures.id, { onDelete: 'cascade' }),
+		// Null for a change made by tapping on a utility screen.
+		captureId: uuid('capture_id').references(() => captures.id, { onDelete: 'cascade' }),
 		// No foreign key: the record is gone after a delete, and comes back on undo.
 		recordId: uuid('record_id').notNull(),
 		kind: text('kind').$type<OperationKind>().notNull(),

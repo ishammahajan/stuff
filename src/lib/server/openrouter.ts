@@ -1,5 +1,12 @@
 import { OPENROUTER_API_KEY } from '$app/env/private';
-import { ITEM_TYPES, OPERATION_KINDS, type ItemFields, type ItemType } from '../items.ts';
+import {
+	ITEM_TYPES,
+	OPERATION_KINDS,
+	REPEAT_UNITS,
+	type ItemFields,
+	type ItemType,
+	type RepeatUnit
+} from '../items.ts';
 import type { ProposedOperation } from './records.ts';
 
 const MODEL = 'google/gemini-3.8-flash';
@@ -25,9 +32,33 @@ const OPERATIONS_SCHEMA = {
 			amount: { type: ['number', 'null'] },
 			currency: { type: ['string', 'null'] },
 			date: { type: ['string', 'null'] },
-			tags: { type: ['array', 'null'], items: { type: 'string' } }
+			tags: { type: ['array', 'null'], items: { type: 'string' } },
+			important: { type: ['boolean', 'null'] },
+			repeat: {
+				type: ['object', 'null'],
+				properties: {
+					every: { type: 'integer' },
+					unit: { type: 'string', enum: REPEAT_UNITS }
+				},
+				required: ['every', 'unit'],
+				additionalProperties: false
+			},
+			remindAt: { type: ['string', 'null'] }
 		},
-		required: ['action', 'id', 'type', 'title', 'details', 'amount', 'currency', 'date', 'tags'],
+		required: [
+			'action',
+			'id',
+			'type',
+			'title',
+			'details',
+			'amount',
+			'currency',
+			'date',
+			'tags',
+			'important',
+			'repeat',
+			'remindAt'
+		],
 		additionalProperties: false
 	}
 };
@@ -99,7 +130,8 @@ The speaker's local date is ${context.localDate} and their time zone is ${contex
 First transcribe the recording faithfully, in the language spoken. If there is no recording, set the transcript to an empty string. Then work out what the speaker wants the app to do, and express it as operations:
 - create: a new record. Set type and title, and any other field that was said.
 - update: change an existing record. Set id, and only the fields that change. Leave the others null.
-- complete: mark an existing task as done. Set id only.
+- complete: mark an existing task as done. Set id only. A repeating task moves to its next date by itself.
+- reopen: mark a completed task as not done, when the speaker says it isn't finished. Set id only.
 - delete: remove an existing record. Set id only. Use it only when the speaker clearly asks to remove something.
 
 File only speech meant for the app, such as "remind me to call the bank", "I spent 20 on lunch", or "note that Sam recommended Dune". Ignore background speech, such as a TV, a phone call, or other people talking, and anything the speaker says to someone else. If nothing is meant for the app, return no operations. Never invent records.
@@ -122,15 +154,41 @@ Fields:
 - currency: the ISO 4217 code only if the speaker names a currency, otherwise null.
 - date: YYYY-MM-DD for a task's due date or the day a transaction happened, resolved against the local date. Use null if no date is said or implied.
 - tags: one to three lowercase topic words, for example "movie" or "startup-idea".
-
+- important: true for a task the speaker calls important, urgent, or a priority; false when they say it no longer is. Otherwise null.
+- repeat: for a task that recurs, such as "every Monday" or "every 2 weeks", set every and unit, and set date to the first occurrence. To stop a task repeating, set every to 0. Otherwise null.
+- remindAt: YYYY-MM-DDTHH:MM in the speaker's local time, when the speaker asks to be reminded at a time, such as "remind me at 3 pm to call the bank". Also set date to that day. A dated task without a time is reminded in the morning of its date, so leave remindAt null when no time is said. To remove a reminder time, set it to an empty string. Otherwise null.
+${screenInstructions(context)}
 Existing records:
-Below are some of the speaker's records, one JSON object per line: open tasks and the latest notes, expenses, and income. This list is partial. When the speaker refers to a record that is not listed, call ${SEARCH_TOOL} to find it. Use only IDs from this list or from search results. When the speaker talks about a record that already exists, update or complete it instead of creating a duplicate.
+Below are some of the speaker's records, one JSON object per line: open tasks and the latest notes, expenses, and income. This list is partial. When the speaker refers to a record that is not listed, call ${SEARCH_TOOL} to find it. Use only IDs from this list, from the selected records, or from search results. When the speaker talks about a record that already exists, update or complete it instead of creating a duplicate.
 
 ${context.snapshot || '(no records yet)'}
 
 ${context.reply ? replyInstructions(context.reply) : ASKING}
 
 When you are done, call ${FILE_TOOL} with the transcript, the operations, and the question.`;
+}
+
+const SCREEN_NAMES: Record<ItemType, string> = {
+	task: 'Tasks',
+	note: 'Knowledge',
+	expense: 'Budget',
+	income: 'Budget'
+};
+
+/** Where the speaker recorded, and the records they selected before speaking. */
+function screenInstructions(context: FilingContext): string {
+	const parts: string[] = [];
+	if (context.screen) {
+		parts.push(
+			`The speaker recorded this on the ${SCREEN_NAMES[context.screen]} screen, so when a memo could be more than one type, prefer ${context.screen}.`
+		);
+	}
+	if (context.selected) {
+		parts.push(
+			`The speaker selected these records and is talking about them. "This", "these", or "them" means these records, and a change applies to all of them unless the speaker says otherwise:\n${context.selected}`
+		);
+	}
+	return parts.length ? `\nContext:\n${parts.join('\n\n')}\n` : '';
 }
 
 const ASKING = `Asking:
@@ -158,6 +216,10 @@ export interface FilingContext {
 	search: (query: string, type: ItemType | null) => unknown;
 	/** Set when the recording answers an open question. */
 	reply: ReplyContext | null;
+	/** The utility screen the memo was recorded on, by its record type. */
+	screen: ItemType | null;
+	/** The records the speaker selected, one JSON object per line, or empty. */
+	selected: string;
 }
 
 export interface QuestionOption {
@@ -201,6 +263,25 @@ function cleanFields(raw: Record<string, unknown>): Partial<ItemFields> {
 	if (typeof raw.currency === 'string' && raw.currency) fields.currency = raw.currency;
 	if (typeof raw.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw.date)) fields.date = raw.date;
 	if (Array.isArray(raw.tags)) fields.tags = raw.tags.filter((tag) => typeof tag === 'string');
+	if (typeof raw.important === 'boolean') fields.important = raw.important;
+	// An empty string removes the reminder time.
+	if (raw.remindAt === '') fields.remindAt = null;
+	else if (typeof raw.remindAt === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(raw.remindAt)) {
+		fields.remindAt = raw.remindAt;
+	}
+	if (typeof raw.repeat === 'object' && raw.repeat !== null) {
+		const { every, unit } = raw.repeat as Record<string, unknown>;
+		// Every 0 means the task stops repeating.
+		if (every === 0) fields.repeat = null;
+		else if (
+			Number.isInteger(every) &&
+			(every as number) > 0 &&
+			(every as number) <= 365 &&
+			REPEAT_UNITS.includes(unit as RepeatUnit)
+		) {
+			fields.repeat = { every: every as number, unit: unit as RepeatUnit };
+		}
+	}
 	return fields;
 }
 
@@ -225,7 +306,10 @@ function parseOperations(value: unknown): ProposedOperation[] {
 						amount: fields.amount ?? null,
 						currency: fields.currency ?? null,
 						date: fields.date ?? null,
-						tags: fields.tags ?? []
+						tags: fields.tags ?? [],
+						important: fields.important ?? false,
+						repeat: fields.repeat ?? null,
+						remindAt: fields.remindAt ?? null
 					}
 				});
 				break;
@@ -233,6 +317,7 @@ function parseOperations(value: unknown): ProposedOperation[] {
 				if (id && Object.keys(fields).length > 0) parsed.push({ action: 'update', id, changes: fields });
 				break;
 			case 'complete':
+			case 'reopen':
 			case 'delete':
 				if (id) parsed.push({ action: operation.action, id });
 				break;
