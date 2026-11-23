@@ -1,9 +1,10 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 	import { attached, type AttachedItem } from '#lib/attached.svelte.ts';
 	import { toWav } from '#lib/audio.ts';
 	import { localDate } from '#lib/items.ts';
 	import { recent } from '#lib/recent.svelte.ts';
+	import RecentPanel from '#lib/RecentPanel.svelte';
 
 	// Recordings stop and send at this length.
 	const MAX_SECONDS = 180;
@@ -141,6 +142,8 @@
 		items: AttachedItem[]
 	) {
 		uploads += 1;
+		// Shows the capture processing, then what it filed.
+		recent.open = true;
 		try {
 			const form = new FormData();
 			if (recording) form.set('audio', await toWav(recording), 'capture.wav');
@@ -272,6 +275,11 @@
 		pressUp();
 	}
 
+	function togglePanel() {
+		recent.open = !recent.open;
+		if (recent.open) recent.refresh();
+	}
+
 	function prepareCanvas(): CanvasRenderingContext2D | null {
 		const ratio = window.devicePixelRatio || 1;
 		const width = canvas.clientWidth * ratio;
@@ -333,6 +341,11 @@
 		};
 	});
 
+	// Loads the latest captures, for the panel button's dot and for screens that reload when one finishes.
+	onMount(() => {
+		recent.refresh();
+	});
+
 	onDestroy(() => {
 		if (session) finish(false);
 	});
@@ -341,6 +354,9 @@
 <svelte:window {onkeydown} {onkeyup} {onpaste} {ondragover} {ondrop} />
 
 <div class="dock">
+	{#if recent.open}
+		<RecentPanel />
+	{/if}
 	{#if message}
 		<p class="message" role="alert">{message}</p>
 	{:else if uploads > 0}
@@ -405,6 +421,19 @@
 			<button class="side discard" aria-label="Discard recording" onclick={() => finish(false)}
 				>×</button
 			>
+		{:else}
+			<button
+				class="side toggle"
+				class:busy={recent.busy && !recent.open}
+				aria-label={recent.open ? 'Hide recent recordings' : 'Show recent recordings'}
+				aria-expanded={recent.open}
+				aria-controls="recent-panel"
+				onclick={togglePanel}
+			>
+				<svg viewBox="0 0 24 24" aria-hidden="true" class:flipped={recent.open}>
+					<path d="M6 15l6-6 6 6" />
+				</svg>
+			</button>
 		{/if}
 	</div>
 </div>
@@ -485,9 +514,41 @@
 		line-height: 1;
 	}
 
-	.discard {
+	.discard,
+	.toggle {
 		left: 100%;
 		transform: translate(0.5rem, -50%);
+	}
+
+	.toggle {
+		display: grid;
+		place-items: center;
+	}
+
+	.toggle svg {
+		width: 1.125rem;
+		height: 1.125rem;
+		fill: none;
+		stroke: currentColor;
+		stroke-width: 2.25;
+		stroke-linecap: round;
+		stroke-linejoin: round;
+	}
+
+	.toggle svg.flipped {
+		transform: rotate(180deg);
+	}
+
+	/* Something is processing or waiting for an answer while the panel is closed. */
+	.toggle.busy::after {
+		content: '';
+		position: absolute;
+		top: 0.1rem;
+		right: 0.1rem;
+		width: 0.55rem;
+		height: 0.55rem;
+		border-radius: 50%;
+		background: var(--accent);
 	}
 
 	.attach {

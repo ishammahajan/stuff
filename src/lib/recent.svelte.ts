@@ -1,6 +1,6 @@
-// The latest captures, shared by the pill (which reports new ones) and the home
-// screen's recent strip (which shows them). Loaded from the client, because the
-// cached dashboard HTML can be stale.
+// The latest captures, shared by the pill (which reports new ones), the recent
+// panel above it (which shows them), and utility screens (which reload when one
+// finishes). Loaded from the client, because the cached dashboard HTML can be stale.
 import { localDate, type CaptureView } from './items.ts';
 
 const POLL_MS = 2000;
@@ -11,6 +11,13 @@ class Recent {
 	message = $state('');
 	/** The open question the pill's next recording answers, if the user chose to reply. */
 	replyTo = $state<{ id: string; question: string } | null>(null);
+	/** Whether the recent panel above the pill is open. */
+	open = $state(false);
+
+	/** Whether a capture is processing or waiting for an answer, for the panel button's dot. */
+	get busy(): boolean {
+		return this.captures.some((c) => c.status === 'pending' || c.status === 'asking');
+	}
 
 	#timer: ReturnType<typeof setTimeout> | undefined;
 

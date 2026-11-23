@@ -105,7 +105,8 @@ The parts:
    the prompt: up to 50 open tasks, and the latest 20 notes, 20 expenses, and 10
    income records. The prompt says the list is partial. Records the user selected
    (`describeRecords`) are listed separately as what "this" or "these" means, and
-   the screen leans the model toward that utility's type.
+   the screen leans the model toward that utility's type. The names from
+   **Settings** are listed too, so the model hears and spells them right.
 5. `src/lib/server/openrouter.ts` (`interpretMemo`) sends the audio, the file (an
    image as `image_url`, a PDF as `file`), and instructions to
    `google/gemini-3.8-flash` on OpenRouter with two tools, in a loop of at most four
@@ -122,10 +123,14 @@ The parts:
    (`applyOperations`). Operations on an ID the account
    doesn't own, and a second operation on the same record, are skipped. On failure
    the capture becomes `failed`, and the audio is kept for a retry.
-7. The dashboard's recent strip (`src/lib/RecentStrip.svelte`) shows the last 24
-   hours of the latest three captures from `GET /api/captures`, through the shared
-   state in `src/lib/recent.svelte.ts`. It polls every 2 s while one is pending,
-   and the pill refreshes it after each upload. A capture that filed nothing shows
+7. The recent panel (`src/lib/RecentPanel.svelte`) opens above the pill on every
+   signed-in screen. The chevron button right of the pill opens and closes it,
+   and it opens by itself when a capture is sent. While it is closed, a dot on the
+   button means a capture is processing or asking. It shows the last 24 hours of
+   the latest three captures from `GET /api/captures`, through the shared state
+   in `src/lib/recent.svelte.ts` (`recent.open` is the panel's state). It polls
+   every 2 s while one is pending, and the pill refreshes it after each upload and
+   on load. A capture that filed nothing shows
    as "Nothing was recognized", or "Nothing to file" with its transcript or file
    name. Undo goes
    through `POST /api/operations/{id}/undo`. `GET /api/capture/{id}` still reports
@@ -139,7 +144,7 @@ The parts:
 wrong record, such as completing one of two matching tasks. It still files the
 clear parts, and never asks about new records or missing details. The question and
 two to four options, each with the exact operations to apply, live in the
-encrypted `captures.body`. `src/lib/Question.svelte` shows it in the strip and the
+encrypted `captures.body`. `src/lib/Question.svelte` shows it in the panel and the
 inbox:
 
 - Tapping an option (`POST /api/captures/{id}/answer` with `{ option }`) applies
@@ -173,7 +178,8 @@ client for an answer or a tap) to place a repeating task's next date.
 - `src/routes/tasks` lists open tasks in Overdue, Today, Upcoming, and No date,
   important first, then by date. The grouping runs in the browser, which knows the
   local date. The page reloads when a capture finishes.
-- Taps: the circle completes or reopens a task, and × deletes it.
+- Taps: the circle completes or reopens a task, the pencil attaches that one task
+  to the pill and starts recording (one-tap voice edit), and × deletes it.
   `POST /api/tasks/{id}` (`changeTask`) logs each as an operation. Delete and a
   repeating completion show an Undo.
 - A completed task stays in place, struck through, for 10 minutes, then moves to
@@ -207,6 +213,19 @@ calendar subscription. The phone's Calendar fetches a feed and rings its alarms.
   or 404.
 - `/tasks/calendar` makes the link (shown once, with a `webcal:` subscribe button
   and setup steps), replaces it (the old link stops working), or turns it off.
+
+### Settings
+
+Per-user settings live in `users.settings`, encrypted JSON (`Settings` in
+`src/lib/server/settings.ts`). `/settings`, linked from the dashboard header rather
+than a tile, edits them. For now that is **Names**: proper nouns the user types
+(people, places, companies), added one at a time or comma-separated, up to 200.
+A new spelling of a listed name replaces it. Every capture's prompt lists them.
+
+**Appearance** (System, Light, or Dark) is kept per device in `localStorage`
+(`theme`), not on the server. An inline script in `src/app.html` sets
+`data-theme` on `<html>` before the first paint, and `src/app.css` maps it to
+`color-scheme`, which the `light-dark()` colour tokens follow.
 
 ### Capture interface
 
@@ -244,7 +263,7 @@ calendar subscription. The phone's Calendar fetches a feed and rings its alarms.
 - A cached dashboard is dropped when the session ends.
 
 Because the dashboard HTML can be stale, it must not render server data that needs
-to be fresh. Fetch that data from the client instead, as the recent strip does.
+to be fresh. Fetch that data from the client instead, as the recent panel does.
 
 ### Data
 
@@ -293,7 +312,7 @@ Remove each point from this section as it lands, and describe the result in **Ma
 - **Drag to edit on other screens:** Tasks has it (see **Tasks**). Knowledge and
   Budget reuse `attached.svelte.ts` the same way.
 - **Home screen:** later, today's tasks and the month's spending join the tiles,
-  and the recent strip also shows answers to questions.
+  and the recent panel also shows answers to questions.
 - **Not wanted for now:** per-user spending caps. The OpenRouter key has a daily
   cap. Build limits only when a real problem appears.
 

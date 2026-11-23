@@ -17,6 +17,7 @@ import {
 	type ProposedOperation,
 	type Transaction
 } from './records.ts';
+import { loadSettings } from './settings.ts';
 import { keepSpeech } from './speech.ts';
 
 // 16 kHz mono 16-bit WAV is about 32 kB per second, so this allows roughly four minutes.
@@ -302,8 +303,9 @@ async function interpretCapture(account: Account, id: string): Promise<void> {
 
 	let result;
 	try {
-		const all = await loadRecords(account);
+		const [all, settings] = await Promise.all([loadRecords(account), loadSettings(account)]);
 		result = await interpretMemo({ audio, file }, {
+			names: settings.names,
 			localDate: body.localDate,
 			timeZone: body.timeZone,
 			snapshot: snapshot(all),

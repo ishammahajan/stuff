@@ -1,6 +1,4 @@
 <script lang="ts">
-	import RecentStrip from '#lib/RecentStrip.svelte';
-
 	// Utilities shown on the dashboard. Give a tile an `href` when its utility exists.
 	const tiles: { name: string; description: string; href?: string }[] = [
 		{ name: 'Inbox', description: 'Review what was captured', href: '/inbox' },
@@ -17,9 +15,12 @@
 <main>
 	<header>
 		<h1>Stuff</h1>
-		<form method="POST" action="/logout">
-			<button type="submit" class="signout">Sign out</button>
-		</form>
+		<div class="actions">
+			<a class="settings" href="/settings">Settings</a>
+			<form method="POST" action="/logout">
+				<button type="submit" class="signout">Sign out</button>
+			</form>
+		</div>
 	</header>
 
 	<ul>
@@ -40,11 +41,6 @@
 			</li>
 		{/each}
 	</ul>
-
-	<!-- Pushed to the bottom of the screen, just above the pill. -->
-	<div class="recent">
-		<RecentStrip />
-	</div>
 </main>
 
 <style>
@@ -55,8 +51,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: 1.25rem;
-		/* The layout adds 6rem below for the pill. */
-		min-height: calc(100dvh - 6rem - env(safe-area-inset-bottom));
 	}
 
 	header {
@@ -69,6 +63,18 @@
 		margin: 0;
 	}
 
+	.actions {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+
+	.settings {
+		color: inherit;
+		text-decoration: none;
+	}
+
+	.settings,
 	.signout {
 		font: inherit;
 		font-size: 0.875rem;
@@ -128,9 +134,5 @@
 		border-radius: 999px;
 		border: 1px solid var(--border);
 		color: var(--muted);
-	}
-
-	.recent {
-		margin-top: auto;
 	}
 </style>

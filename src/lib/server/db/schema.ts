@@ -19,7 +19,10 @@ export const users = pgTable('users', {
 	// The same data key, wrapped by a key derived from the recovery code.
 	// Context: `users:<id>:recovery`.
 	recoverySalt: bytea('recovery_salt').notNull(),
-	recoveryKey: bytea('recovery_key').notNull()
+	recoveryKey: bytea('recovery_key').notNull(),
+	// Encrypted JSON of the user's settings (`Settings` in `src/lib/server/settings.ts`),
+	// or null before they first save. Context: `users:<id>:settings`.
+	settings: bytea('settings')
 });
 
 export const invites = pgTable('invites', {

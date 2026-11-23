@@ -157,7 +157,7 @@ Fields:
 - important: true for a task the speaker calls important, urgent, or a priority; false when they say it no longer is. Otherwise null.
 - repeat: for a task that recurs, such as "every Monday" or "every 2 weeks", set every and unit, and set date to the first occurrence. To stop a task repeating, set every to 0. Otherwise null.
 - remindAt: YYYY-MM-DDTHH:MM in the speaker's local time, when the speaker asks to be reminded at a time, such as "remind me at 3 pm to call the bank". Also set date to that day. A dated task without a time is reminded in the morning of its date, so leave remindAt null when no time is said. To remove a reminder time, set it to an empty string. Otherwise null.
-${screenInstructions(context)}
+${namesInstructions(context.names)}${screenInstructions(context)}
 Existing records:
 Below are some of the speaker's records, one JSON object per line: open tasks and the latest notes, expenses, and income. This list is partial. When the speaker refers to a record that is not listed, call ${SEARCH_TOOL} to find it. Use only IDs from this list, from the selected records, or from search results. When the speaker talks about a record that already exists, update or complete it instead of creating a duplicate.
 
@@ -174,6 +174,12 @@ const SCREEN_NAMES: Record<ItemType, string> = {
 	expense: 'Budget',
 	income: 'Budget'
 };
+
+/** The proper nouns the speaker uses, so they are heard and spelled right. */
+function namesInstructions(names: string[]): string {
+	if (names.length === 0) return '';
+	return `\nNames:\nThe speaker often says these names of people, places, companies, and other things, spelled as shown. When a word in the recording sounds like one of them, it is most likely that name, so write it with this exact spelling in the transcript and the records. Other words that only sound alike are still possible, so judge by context:\n${names.map((name) => JSON.stringify(name)).join('\n')}\n`;
+}
 
 /** Where the speaker recorded, and the records they selected before speaking. */
 function screenInstructions(context: FilingContext): string {
@@ -220,6 +226,8 @@ export interface FilingContext {
 	screen: ItemType | null;
 	/** The records the speaker selected, one JSON object per line, or empty. */
 	selected: string;
+	/** Proper nouns the speaker added in Settings. */
+	names: string[];
 }
 
 export interface QuestionOption {

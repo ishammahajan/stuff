@@ -149,7 +149,7 @@
 	function onpointerdown(event: PointerEvent, task: TaskView) {
 		dragged = false;
 		if (!event.isPrimary || !selected.has(task.id)) return;
-		if ((event.target as HTMLElement).closest('.check, .delete')) return;
+		if ((event.target as HTMLElement).closest('.check, .edit, .delete')) return;
 		press = { x: event.clientX, y: event.clientY };
 		try {
 			(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
@@ -255,6 +255,16 @@
 					>{meta(task)}</span
 				>
 			{/if}
+		</button>
+		<button
+			class="edit"
+			aria-label={`Edit ${task.title} by voice`}
+			title="Edit by voice"
+			onclick={() => attached.drop([{ id: task.id, title: task.title }])}
+		>
+			<svg viewBox="0 0 24 24" aria-hidden="true">
+				<path d="M4 20h4L19 9l-4-4L4 16v4zM14 6l4 4" />
+			</svg>
 		</button>
 		<button class="delete" aria-label={`Delete ${task.title}`} onclick={() => change(task, 'delete')}
 			>×</button
@@ -452,6 +462,7 @@
 		color: var(--danger);
 	}
 
+	.edit,
 	.delete {
 		flex: none;
 		width: 2.25rem;
@@ -460,6 +471,21 @@
 		color: var(--muted);
 		font-size: 1.25rem;
 		line-height: 1;
+	}
+
+	.edit {
+		display: grid;
+		place-items: center;
+	}
+
+	.edit svg {
+		width: 1.125rem;
+		height: 1.125rem;
+		fill: none;
+		stroke: currentColor;
+		stroke-width: 2;
+		stroke-linecap: round;
+		stroke-linejoin: round;
 	}
 
 	.selection,

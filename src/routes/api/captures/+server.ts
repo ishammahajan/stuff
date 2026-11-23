@@ -5,7 +5,7 @@ import type { RequestHandler } from './$types';
 const RECENT = 3;
 
 /**
- * Returns the latest captures for the home screen's recent strip, including ones
+ * Returns the latest captures for the recent panel, including ones
  * that filed nothing, so the strip can say so. Captures left pending by a restart
  * start processing again, as on the inbox.
  */

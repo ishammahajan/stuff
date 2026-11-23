@@ -10,6 +10,15 @@
 	--danger: light-dark(#b3261e, #ff8a80);
 }
 
+/* A theme chosen in Settings overrides the system's. */
+:root[data-theme='light'] {
+	color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+	color-scheme: dark;
+}
+
 *,
 *::before,
 *::after {
