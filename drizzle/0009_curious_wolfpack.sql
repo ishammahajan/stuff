@@ -1,0 +1,1 @@
+ALTER TABLE "captures" ADD COLUMN "answered" boolean DEFAULT false NOT NULL;

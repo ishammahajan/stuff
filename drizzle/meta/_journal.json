@@ -64,6 +64,13 @@
       "when": 1795167544331,
       "tag": "0008_mixed_imperial_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1795512379945,
+      "tag": "0009_curious_wolfpack",
+      "breakpoints": true
     }
   ]
 }

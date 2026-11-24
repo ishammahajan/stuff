@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
 	import { invalidateAll } from '$app/navigation';
+	import Answer from '#lib/Answer.svelte';
 	import OperationList from '#lib/OperationList.svelte';
 	import Question from '#lib/Question.svelte';
 	import type { PageProps } from './$types';
@@ -54,6 +55,9 @@
 			{:else if capture.status === 'pending'}
 				<p class="muted">Not processed yet.</p>
 			{:else}
+				{#if capture.answer}
+					<Answer answer={capture.answer} />
+				{/if}
 				{#if capture.operations.length > 0}
 					<OperationList operations={capture.operations} />
 				{/if}

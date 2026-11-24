@@ -11,6 +11,7 @@ import {
 	applyOperations,
 	describeRecords,
 	listOperations,
+	listRecords,
 	loadRecords,
 	searchRecords,
 	snapshot,
@@ -37,6 +38,8 @@ interface CaptureBody {
 	timeZone: string;
 	transcript: string | null;
 	error: string | null;
+	// The model's answer to a question the speaker asked.
+	answer?: string | null;
 	// The question the model asked instead of guessing, with what settled it.
 	question?: (ProposedQuestion & { answer: string | null }) | null;
 	// The capture whose open question this recording answers.
@@ -186,6 +189,7 @@ async function finishCapture(
 				.update(captures)
 				.set({
 					status,
+					answered: Boolean(body.answer),
 					audio: null,
 					file: null,
 					body: encryptJson(account.key, body, bodyContext(id))
@@ -287,7 +291,8 @@ async function interpretCapture(account: Account, id: string): Promise<void> {
 
 	// Nothing but noise: there is nothing to send to the model.
 	if (!audio && !file) {
-		await finishCapture(account, id, { ...body, transcript: '', question: null, error: null }, [], null);
+		const empty = { ...body, transcript: '', answer: null, question: null, error: null };
+		await finishCapture(account, id, empty, [], null);
 		return;
 	}
 
@@ -310,6 +315,7 @@ async function interpretCapture(account: Account, id: string): Promise<void> {
 			timeZone: body.timeZone,
 			snapshot: snapshot(all),
 			search: (query, type) => searchRecords(all, query, type),
+			list: (filter) => listRecords(all, filter),
 			reply,
 			screen: body.screen ?? null,
 			selected: describeRecords(all, body.items ?? [])
@@ -327,7 +333,7 @@ async function interpretCapture(account: Account, id: string): Promise<void> {
 	await finishCapture(
 		account,
 		id,
-		{ ...body, transcript: result.transcript, question, error: null },
+		{ ...body, transcript: result.transcript, answer: result.answer, question, error: null },
 		result.operations,
 		reply ? body.replyTo! : null
 	);
@@ -365,6 +371,7 @@ function toView(
 		status: row.status,
 		transcript: body.transcript,
 		fileName: body.file?.name ?? null,
+		answer: body.answer ?? null,
 		operations,
 		question: body.question
 			? {
@@ -385,8 +392,8 @@ export async function getCapture(account: Account, id: string): Promise<CaptureV
 }
 
 /**
- * Lists the latest captures. Unless `includeEmpty` is set, a capture that filed
- * nothing, such as a silent recording, is left out.
+ * Lists the latest captures. Unless `includeEmpty` is set, a capture that neither
+ * filed nor answered anything, such as a silent recording, is left out.
  */
 export async function listCaptures(
 	account: Account,
@@ -395,6 +402,7 @@ export async function listCaptures(
 ): Promise<CaptureView[]> {
 	const filedSomething = or(
 		ne(captures.status, 'done'),
+		eq(captures.answered, true),
 		exists(
 			db
 				.select({ id: operations.id })

@@ -109,18 +109,32 @@ The parts:
    **Settings** are listed too, so the model hears and spells them right.
 5. `src/lib/server/openrouter.ts` (`interpretMemo`) sends the audio, the file (an
    image as `image_url`, a PDF as `file`), and instructions to
-   `google/gemini-3.8-flash` on OpenRouter with two tools, in a loop of at most four
-   calls. `search_records` runs `searchRecords`, a keyword match over the decrypted
-   records. `file_memo` ends the loop with the transcript and a list of operations:
-   create, update, complete, reopen, or delete by record ID. The last call forces
-   `file_memo`. The instructions tell the model to file only speech meant for the
-   app and to ignore background speech, such as a TV. A file is filed by what it
-   holds, such as a receipt as an expense; a file with many entries, such as a bank
-   statement, becomes one summary note. `file_memo` can also carry
-   one question (see **Questions** below).
+   `google/gemini-3.8-flash` on OpenRouter with these tools, in a loop of at most
+   six calls:
+   - `search_records` runs `searchRecords`, a keyword match over the decrypted
+     records.
+   - `list_records` runs `listRecords`: one type, filtered by date range, tag, or
+     done state, up to 100.
+   - `openrouter:web_search` is a server tool. OpenRouter runs the searches inside
+     a call, as many as the model wants, so they don't use up the loop. It is
+     pinned to the Exa engine, because Google's own search cost about ten times
+     as much per search in a test.
+   - `file_memo` ends the loop with the transcript, a list of operations (create,
+     update, complete, reopen, or delete by record ID), an optional answer, and
+     an optional question (see **Questions** below). The last call forces
+     `file_memo`.
+
+   The instructions tell the model to file only speech meant for the app and to
+   ignore background speech, such as a TV. A file is filed by what it holds, such
+   as a receipt as an expense; a file with many entries, such as a bank statement,
+   becomes one summary note. When the speaker asks something, the model answers
+   from the records first and searches the web only for facts the records lack.
+   Web text is never instructions. Each call logs its cost and number of web
+   searches.
 6. On success, one transaction marks the capture `done` (or `asking`, when it has
-   an open question), deletes the audio and the file, and applies the operations
-   (`applyOperations`). Operations on an ID the account
+   an open question), stores the answer in the encrypted body and sets the
+   plaintext `answered` flag, deletes the audio and the file, and applies the
+   operations (`applyOperations`). Operations on an ID the account
    doesn't own, and a second operation on the same record, are skipped. On failure
    the capture becomes `failed`, and the audio is kept for a retry.
 7. The recent panel (`src/lib/RecentPanel.svelte`) opens above the pill on every
@@ -130,14 +144,16 @@ The parts:
    the latest three captures from `GET /api/captures`, through the shared state
    in `src/lib/recent.svelte.ts` (`recent.open` is the panel's state). It polls
    every 2 s while one is pending, and the pill refreshes it after each upload and
-   on load. A capture that filed nothing shows
+   on load. An answer shows with the question it answers
+   (`src/lib/Answer.svelte`). A capture that filed and answered nothing shows
    as "Nothing was recognized", or "Nothing to file" with its transcript or file
    name. Undo goes
    through `POST /api/operations/{id}/undo`. `GET /api/capture/{id}` still reports
    a single capture.
 8. `src/routes/inbox` lists captures with what each one did
    (`src/lib/OperationList.svelte`), with Undo on each operation, and retry and
-   delete actions on each capture. Captures that filed nothing are hidden. Both
+   delete actions on each capture, and its answer. Captures that filed and answered
+   nothing are hidden. Both
    lists put open questions first.
 
 **Questions:** the model asks only when a wrong guess would change or remove the
@@ -311,8 +327,7 @@ Remove each point from this section as it lands, and describe the result in **Ma
 
 - **Drag to edit on other screens:** Tasks has it (see **Tasks**). Knowledge and
   Budget reuse `attached.svelte.ts` the same way.
-- **Home screen:** later, today's tasks and the month's spending join the tiles,
-  and the recent panel also shows answers to questions.
+- **Home screen:** later, today's tasks and the month's spending join the tiles.
 - **Not wanted for now:** per-user spending caps. The OpenRouter key has a daily
   cap. Build limits only when a real problem appears.
 

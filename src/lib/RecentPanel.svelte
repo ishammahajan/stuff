@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Answer from '#lib/Answer.svelte';
 	import OperationList from '#lib/OperationList.svelte';
 	import Question from '#lib/Question.svelte';
 	import { recent } from '#lib/recent.svelte.ts';
@@ -40,12 +41,17 @@
 							: "A recording couldn't be read."}
 						<a href="/inbox" onclick={() => (recent.open = false)}>Retry in inbox</a>
 					</p>
-				{:else if capture.question}
+				{:else if capture.question || capture.answer}
 					<div class="stack">
+						{#if capture.answer}
+							<Answer answer={capture.answer} asked={capture.transcript} />
+						{/if}
 						{#if capture.operations.length > 0}
 							<OperationList operations={capture.operations} onundo={(id) => recent.undo(id)} />
 						{/if}
-						<Question captureId={capture.id} question={capture.question} />
+						{#if capture.question}
+							<Question captureId={capture.id} question={capture.question} />
+						{/if}
 					</div>
 				{:else if capture.operations.length === 0}
 					<p class="muted">

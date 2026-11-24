@@ -1,4 +1,4 @@
-import { customType, index, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { boolean, customType, index, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import type { CaptureStatus, ItemType, OperationKind } from '../../items.ts';
 
 const bytea = customType<{ data: Buffer }>({
@@ -56,6 +56,9 @@ export const captures = pgTable(
 			.references(() => users.id, { onDelete: 'cascade' }),
 		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 		status: text('status').$type<CaptureStatus>().notNull().default('pending'),
+		// Whether the body holds an answer, so the inbox can list captures that only
+		// answered a question. The answer itself is encrypted in the body.
+		answered: boolean('answered').notNull().default(false),
 		// Encrypted WAV recording, kept until processing succeeds so a failure can be
 		// retried. Context: `captures:<id>:audio`.
 		audio: bytea('audio'),

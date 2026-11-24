@@ -194,6 +194,41 @@ export function searchRecords(all: StoredRecord[], query: string, type: ItemType
 		.map(({ record }) => summary(record));
 }
 
+const LIST_LIMIT = 100;
+
+/** Which records the list tool returns. Null fields don't filter. */
+export interface ListFilter {
+	type: ItemType;
+	/** First and last date, YYYY-MM-DD, on the record's own date. */
+	from: string | null;
+	to: string | null;
+	tag: string | null;
+	/** For tasks: done (true) or open (false). */
+	completed: boolean | null;
+}
+
+/** Lists records of one type, newest first: by their date, or by last change without one. */
+export function listRecords(all: StoredRecord[], filter: ListFilter) {
+	const { type, from, to, tag, completed } = filter;
+	const ranged = from !== null || to !== null;
+	const sortKey = (record: StoredRecord) =>
+		record.fields.date ?? record.updatedAt.toISOString().slice(0, 10);
+	const matches = all
+		.filter((record) => {
+			const { date, tags } = record.fields;
+			if (record.type !== type) return false;
+			if (ranged && (!date || (from && date < from) || (to && date > to))) return false;
+			if (tag && !tags.includes(tag)) return false;
+			if (completed !== null && (record.completedAt !== null) !== completed) return false;
+			return true;
+		})
+		.sort((a, b) => sortKey(b).localeCompare(sortKey(a)));
+	return {
+		total: matches.length,
+		records: matches.slice(0, LIST_LIMIT).map((record) => summary(record, 300))
+	};
+}
+
 /**
  * Applies operations inside the caller's transaction and logs each one, under the
  * capture that asked for them, or under none for a tap on a utility screen.

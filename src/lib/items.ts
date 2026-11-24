@@ -144,6 +144,8 @@ export interface CaptureView {
 	transcript: string | null;
 	/** The name of the attached file, if any. */
 	fileName: string | null;
+	/** The answer to a question the user asked, if they asked one. */
+	answer: string | null;
 	operations: OperationView[];
 	question: QuestionView | null;
 	error: string | null;
