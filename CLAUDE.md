@@ -113,8 +113,10 @@ The parts:
    six calls:
    - `search_records` runs `searchRecords`, a keyword match over the decrypted
      records.
-   - `list_records` runs `listRecords`: one type, filtered by date range, tag, or
-     done state, up to 100.
+   - `list_records` runs `listRecords`: one type, filtered by date range, tag,
+     list, or done state, up to 100.
+   - `search_knowledge` runs `searchKnowledge`, a search by meaning over notes and
+     the text of PDFs (see **Knowledge**).
    - `openrouter:web_search` is a server tool. OpenRouter runs the searches inside
      a call, as many as the model wants, so they don't use up the loop. It is
      pinned to the Exa engine, because Google's own search cost about ten times
@@ -127,8 +129,10 @@ The parts:
    The instructions tell the model to file only speech meant for the app and to
    ignore background speech, such as a TV. A file is filed by what it holds, such
    as a receipt as an expense; a file with many entries, such as a bank statement,
-   becomes one summary note. When the speaker asks something, the model answers
-   from the records first and searches the web only for facts the records lack.
+   becomes one summary note. A reference PDF, such as a manual or an article,
+   becomes one note whose text is kept for search (see **Knowledge**). When the
+   speaker asks something, the model answers
+   from the records and the knowledge base first and searches the web only for facts the records lack.
    Web text is never instructions. Each call logs its cost and number of web
    searches.
 6. On success, one transaction marks the capture `done` (or `asking`, when it has
@@ -196,7 +200,7 @@ client for an answer or a tap) to place a repeating task's next date.
   local date. The page reloads when a capture finishes.
 - Taps: the circle completes or reopens a task, the pencil attaches that one task
   to the pill and starts recording (one-tap voice edit), and × deletes it.
-  `POST /api/tasks/{id}` (`changeTask`) logs each as an operation. Delete and a
+  `POST /api/tasks/{id}` (`changeRecord`) logs each as an operation. Delete and a
   repeating completion show an Undo.
 - A completed task stays in place, struck through, for 10 minutes, then moves to
   the collapsed Archive. This follows from `completed_at`; nothing is stored. The
@@ -207,6 +211,33 @@ client for an answer or a tap) to place a repeating task's next date.
   get `touch-action: none` so the drag works on a touch screen. The screen and
   the pill share `src/lib/attached.svelte.ts`: the attached items, the open
   screen, and the pill element for hit-testing the drop.
+
+### Knowledge
+
+- Notes are `records` of type `note`. A note may belong to a `list` (for example
+  "Movies"), one item per note. The prompt lists the existing list names
+  (`listNames`), so the model reuses them.
+- **Embeddings** are computed on this server: `src/lib/server/embeddings.ts` runs
+  bge-small-en-v1.5 (quantized ONNX, English, 384 dimensions) through
+  `onnxruntime-node`, with its own WordPiece tokenizer. The model takes about
+  100 MB of memory. `scripts/fetch-models.ts` downloads it, checked by SHA-256, to
+  `models/bge-small-en-v1.5/` (git-ignored); `pnpm build` runs it first.
+- **PDFs:** `src/lib/server/knowledge.ts` extracts the text with `unpdf` while the
+  model call runs, and cuts it into passages of about 200 words with 40 words of
+  overlap, up to 1500. A PDF with less than 200 characters of text counts as
+  scanned and keeps only its note. The capture's first created note gets the
+  passages, stored in `passages` (kind `document`) in the same transaction. The
+  original file is deleted like any other.
+- **Search:** `searchKnowledge` embeds the query, compares it in memory with every
+  note and passage of the account, and returns the top 8. A note's embedding is
+  made the first time a search needs it and kept in `passages` (kind `note`),
+  keyed by a hash of the note's text, so an edited note is embedded again.
+- `src/routes/knowledge` lists notes by list, then Documents (notes with PDF text),
+  then the others, newest first in each. Taps: the pencil (edit by voice), select
+  and drag onto the pill, and × (`POST /api/notes/{id}`, with an Undo). Deleting a
+  note deletes its passages, and Undo brings back the note but not the PDF text.
+- Tasks and Knowledge share the selection and drag logic in
+  `src/lib/selection.svelte.ts` and `src/lib/SelectionBar.svelte`.
 
 ### Reminders
 
@@ -284,7 +315,7 @@ to be fresh. Fetch that data from the client instead, as the recent panel does.
 ### Data
 
 - `src/lib/server/db/schema.ts` defines the tables: `users`, `invites`, `sessions`,
-  `captures`, `records`, `operations`, and `calendar_feeds`. Each encrypted column
+  `captures`, `records`, `operations`, `passages`, and `calendar_feeds`. Each encrypted column
   notes its context string.
 - `records` is shared by all utilities. Each row has a user, a type, timestamps,
   `completed_at` for tasks, and an encrypted body (`ItemFields`). Totals and
@@ -315,18 +346,16 @@ Remove each point from this section as it lands, and describe the result in **Ma
 - **Richer records:** a record can be any small document, such as a budget
   category with its allocation, a transaction that references a category by ID, or
   a statement import. Budget may add a static map (its categories) to the snapshot.
-- **Search with embeddings:** embeddings arrive with the Knowledge utility, for
-  queries such as "give me my startup ideas". The input is audio, so there is no
-  text to embed before the call: retrieval happens only through the search tool.
 - **Model provider:** stay on OpenRouter. Calling Google directly, so that only
   Google receives the audio, was considered and rejected on 2026-11-18.
-- **Order:** the Knowledge and Budget utilities (Tasks is built). Read
+- **Order:** the Budget utility next (Tasks and Knowledge are built). Read
   `~/dev/projects/budgeting` before building Budget.
+- **URLs in Knowledge:** saving an article from a link was put off.
 
 ### Capture interface, remaining parts
 
-- **Drag to edit on other screens:** Tasks has it (see **Tasks**). Knowledge and
-  Budget reuse `attached.svelte.ts` the same way.
+- **Drag to edit on Budget:** Tasks and Knowledge have it. Budget reuses
+  `selection.svelte.ts` the same way.
 - **Home screen:** later, today's tasks and the month's spending join the tiles.
 - **Not wanted for now:** per-user spending caps. The OpenRouter key has a daily
   cap. Build limits only when a real problem appears.

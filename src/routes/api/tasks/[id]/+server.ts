@@ -1,6 +1,6 @@
 import { error, json } from '@sveltejs/kit';
 import { refreshFeedQuietly } from '#lib/server/calendar.ts';
-import { changeTask } from '#lib/server/records.ts';
+import { changeRecord } from '#lib/server/records.ts';
 import type { RequestHandler } from './$types';
 
 const ACTIONS = ['complete', 'reopen', 'delete'] as const;
@@ -20,7 +20,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	if (typeof localDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(localDate)) {
 		error(400, 'localDate must be YYYY-MM-DD.');
 	}
-	const operationId = await changeTask(locals.account!, params.id, action as Action, localDate);
+	const operationId = await changeRecord(locals.account!, params.id, 'task', action as Action, localDate);
 	if (!operationId) return json({ message: 'That task has changed. Reload and try again.' }, { status: 409 });
 	await refreshFeedQuietly(locals.account!);
 	return json({ operationId });

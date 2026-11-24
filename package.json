@@ -13,7 +13,7 @@
 	},
 	"scripts": {
 		"dev": "vite dev",
-		"build": "vite build",
+		"build": "node scripts/fetch-models.ts && vite build",
 		"preview": "vite preview",
 		"start": "node scripts/migrate.ts && node build",
 		"db:generate": "drizzle-kit generate",
@@ -37,6 +37,7 @@
 	"dependencies": {
 		"drizzle-orm": "^0.45.4",
 		"onnxruntime-node": "^1.31.1",
-		"postgres": "^4.1.1"
+		"postgres": "^4.1.1",
+		"unpdf": "^2.2.2"
 	}
 }

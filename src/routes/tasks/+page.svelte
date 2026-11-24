@@ -1,28 +1,25 @@
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { SvelteSet } from 'svelte/reactivity';
 	import { attached } from '#lib/attached.svelte.ts';
 	import { describeRepeat, localDate, type TaskView } from '#lib/items.ts';
 	import { recent } from '#lib/recent.svelte.ts';
+	import { Selection } from '#lib/selection.svelte.ts';
+	import SelectionBar from '#lib/SelectionBar.svelte';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
 
 	// A completed task stays in its place this long, then moves to the archive.
 	const ARCHIVE_AFTER_MS = 10 * 60 * 1000;
-	// A press on a selected task that moves this far is a drag, not a tap.
-	const DRAG_PX = 8;
 	const DAY_MS = 24 * 60 * 60 * 1000;
 
 	let now = $state(Date.now());
 	let today = $derived(localDate(new Date(now)));
-	const selected = new SvelteSet<string>();
+	const selection = new Selection(() => data.tasks.map(({ id, title }) => ({ id, title })));
 	let message = $state('');
 	/** The last tap change that can't simply be tapped back, with its Undo. */
 	let toast = $state<{ text: string; operationId: string } | null>(null);
-	/** Where the dragged selection is, while dragging. */
-	let drag = $state<{ x: number; y: number } | null>(null);
 
 	const isArchived = (task: TaskView) =>
 		task.completedAt !== null && now - Date.parse(task.completedAt) >= ARCHIVE_AFTER_MS;
@@ -112,7 +109,7 @@
 			// Checking off a one-off task can be tapped back, so only these get an Undo.
 			if (action === 'delete') {
 				toast = { text: `Deleted: ${task.title}`, operationId: reply.operationId };
-				selected.delete(task.id);
+				selection.selected.delete(task.id);
 			} else if (action === 'complete' && task.repeat) {
 				toast = { text: `Done, and moved to the next date: ${task.title}`, operationId: reply.operationId };
 			} else {
@@ -130,72 +127,8 @@
 		await invalidateAll();
 	}
 
-	function selectedItems() {
-		return data.tasks
-			.filter((task) => selected.has(task.id))
-			.map((task) => ({ id: task.id, title: task.title }));
-	}
-
-	function talkAbout() {
-		attached.drop(selectedItems());
-		selected.clear();
-	}
-
-	// Dragging: a press on a selected task that moves becomes a drag of the whole
-	// selection. Dropping it on the pill attaches the tasks and starts recording.
-	let press: { x: number; y: number } | null = null;
-	let dragged = false;
-
-	function onpointerdown(event: PointerEvent, task: TaskView) {
-		dragged = false;
-		if (!event.isPrimary || !selected.has(task.id)) return;
-		if ((event.target as HTMLElement).closest('.check, .edit, .delete')) return;
-		press = { x: event.clientX, y: event.clientY };
-		try {
-			(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-		} catch {
-			// The pointer is already gone.
-		}
-	}
-
-	function onpointermove(event: PointerEvent) {
-		if (!press) return;
-		if (!drag && Math.hypot(event.clientX - press.x, event.clientY - press.y) < DRAG_PX) return;
-		drag = { x: event.clientX, y: event.clientY };
-		attached.hovering = attached.isOverPill(event.clientX, event.clientY);
-	}
-
-	function onpointerup(event: PointerEvent) {
-		if (!press) return;
-		press = null;
-		if (!drag) return;
-		dragged = true;
-		drag = null;
-		if (attached.isOverPill(event.clientX, event.clientY)) talkAbout();
-		attached.hovering = false;
-	}
-
-	function onpointercancel() {
-		press = null;
-		drag = null;
-		attached.hovering = false;
-	}
-
-	function toggle(task: TaskView) {
-		// The click that ends a drag isn't a tap.
-		if (dragged) {
-			dragged = false;
-			return;
-		}
-		if (selected.has(task.id)) selected.delete(task.id);
-		else selected.add(task.id);
-	}
-
 	// Drops selected tasks that no longer exist.
-	$effect(() => {
-		const ids = new Set(data.tasks.map((task) => task.id));
-		for (const id of selected) if (!ids.has(id)) selected.delete(id);
-	});
+	$effect(() => selection.prune(data.tasks.map((task) => task.id)));
 
 	// Reloads the tasks when a capture finishes, since it may have changed them.
 	let seen: string | null = null;
@@ -227,12 +160,9 @@
 
 {#snippet row(task: TaskView)}
 	<li
-		class:selected={selected.has(task.id)}
+		class:selected={selection.selected.has(task.id)}
 		class:done={task.completedAt !== null}
-		onpointerdown={(event) => onpointerdown(event, task)}
-		{onpointermove}
-		{onpointerup}
-		{onpointercancel}
+		{...selection.handlers(task.id, '.check, .edit, .delete')}
 	>
 		<button
 			class="check"
@@ -242,7 +172,11 @@
 		>
 			{#if task.completedAt}✓{/if}
 		</button>
-		<button class="body" aria-pressed={selected.has(task.id)} onclick={() => toggle(task)}>
+		<button
+			class="body"
+			aria-pressed={selection.selected.has(task.id)}
+			onclick={() => selection.toggle(task.id)}
+		>
 			<span class="title">
 				{#if task.important}<span class="important" aria-label="Important">!</span>{/if}
 				{task.title}
@@ -280,13 +214,7 @@
 
 	<h1>Tasks</h1>
 
-	{#if selected.size > 0}
-		<div class="selection">
-			<span>{selected.size} selected. Drag onto the pill, or</span>
-			<button class="primary" onclick={talkAbout}>Talk about {selected.size === 1 ? 'it' : 'them'}</button>
-			<button onclick={() => selected.clear()}>Clear</button>
-		</div>
-	{/if}
+	<SelectionBar {selection} noun={['task', 'tasks']} />
 
 	{#if message}
 		<p class="error" role="alert">{message}</p>
@@ -327,12 +255,6 @@
 		</details>
 	{/if}
 </main>
-
-{#if drag}
-	<div class="ghost" style:left="{drag.x}px" style:top="{drag.y}px">
-		{selected.size === 1 ? '1 task' : `${selected.size} tasks`}
-	</div>
-{/if}
 
 <style>
 	main {
@@ -488,7 +410,6 @@
 		stroke-linejoin: round;
 	}
 
-	.selection,
 	.toast {
 		position: sticky;
 		top: 0.5rem;
@@ -496,18 +417,14 @@
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
+		justify-content: space-between;
 		gap: 0.5rem;
 		margin: 0 0 0.75rem;
 		padding: 0.5rem 0.75rem;
 		border-radius: 0.875rem;
-		border: 1px solid var(--accent);
+		border: 1px solid var(--border);
 		background: var(--surface);
 		font-size: 0.875rem;
-	}
-
-	.toast {
-		border-color: var(--border);
-		justify-content: space-between;
 	}
 
 	.toast span {
@@ -515,32 +432,11 @@
 		overflow-wrap: anywhere;
 	}
 
-	.selection button,
 	.toast button {
 		padding: 0.25rem 0.7rem;
 		border-radius: 999px;
 		border: 1px solid var(--border);
 		font-size: 0.8125rem;
-	}
-
-	.selection button.primary {
-		border-color: var(--accent);
-		background: var(--accent);
-		color: var(--on-accent);
-	}
-
-	.ghost {
-		position: fixed;
-		z-index: 20;
-		transform: translate(-50%, -150%);
-		padding: 0.3rem 0.75rem;
-		border-radius: 999px;
-		background: var(--accent);
-		color: var(--on-accent);
-		font-size: 0.875rem;
-		font-weight: 600;
-		pointer-events: none;
-		box-shadow: 0 4px 16px rgb(0 0 0 / 0.2);
 	}
 
 	p {

@@ -21,7 +21,8 @@ import { operations, records } from './db/schema.ts';
 
 /** A change the model asked for, already checked for shape but not against the records. */
 export type ProposedOperation =
-	| { action: 'create'; type: ItemType; fields: ItemFields }
+	// `recordId` is set by the server when something must refer to the new record.
+	| { action: 'create'; type: ItemType; fields: ItemFields; recordId?: string }
 	| { action: 'update'; id: string; changes: Partial<ItemFields> }
 	| { action: 'complete'; id: string }
 	| { action: 'reopen'; id: string }
@@ -126,8 +127,8 @@ export async function loadRecords(account: Account): Promise<StoredRecord[]> {
 const SNAPSHOT_LIMITS: Record<ItemType, number> = { task: 50, note: 20, expense: 20, income: 10 };
 
 /** A short form of a record for the model. Empty fields are left out. */
-function summary(record: StoredRecord, detailsLimit?: number) {
-	const { title, details, amount, currency, date, tags, important, repeat, remindAt } =
+export function summary(record: StoredRecord, detailsLimit?: number) {
+	const { title, details, amount, currency, date, tags, important, repeat, remindAt, list } =
 		record.fields;
 	return {
 		id: record.id,
@@ -141,6 +142,7 @@ function summary(record: StoredRecord, detailsLimit?: number) {
 		...(important ? { important } : {}),
 		...(repeat ? { repeat: describeRepeat(repeat) } : {}),
 		...(remindAt ? { remindAt } : {}),
+		...(list ? { list } : {}),
 		...(record.completedAt ? { completed: true } : {})
 	};
 }
@@ -182,8 +184,8 @@ export function searchRecords(all: StoredRecord[], query: string, type: ItemType
 	return all
 		.filter((record) => type === null || record.type === type)
 		.map((record) => {
-			const { title, details, amount, date, tags } = record.fields;
-			const text = [title, details, amount, date, ...tags].join(' ').toLowerCase();
+			const { title, details, amount, date, tags, list } = record.fields;
+			const text = [title, details, amount, date, list, ...tags].join(' ').toLowerCase();
 			return { record, score: words.filter((word) => text.includes(word)).length };
 		})
 		.filter(({ score }) => score > 0)
@@ -203,13 +205,25 @@ export interface ListFilter {
 	from: string | null;
 	to: string | null;
 	tag: string | null;
+	/** A note list's name, matched without regard to case. */
+	list: string | null;
 	/** For tasks: done (true) or open (false). */
 	completed: boolean | null;
 }
 
+/** The names of the account's note lists, most used first. */
+export function listNames(all: StoredRecord[]): string[] {
+	const counts = new Map<string, number>();
+	for (const record of all) {
+		const { list } = record.fields;
+		if (record.type === 'note' && list) counts.set(list, (counts.get(list) ?? 0) + 1);
+	}
+	return [...counts].sort((a, b) => b[1] - a[1]).map(([name]) => name);
+}
+
 /** Lists records of one type, newest first: by their date, or by last change without one. */
 export function listRecords(all: StoredRecord[], filter: ListFilter) {
-	const { type, from, to, tag, completed } = filter;
+	const { type, from, to, tag, list, completed } = filter;
 	const ranged = from !== null || to !== null;
 	const sortKey = (record: StoredRecord) =>
 		record.fields.date ?? record.updatedAt.toISOString().slice(0, 10);
@@ -219,6 +233,7 @@ export function listRecords(all: StoredRecord[], filter: ListFilter) {
 			if (record.type !== type) return false;
 			if (ranged && (!date || (from && date < from) || (to && date > to))) return false;
 			if (tag && !tags.includes(tag)) return false;
+			if (list && record.fields.list?.toLowerCase() !== list.toLowerCase()) return false;
 			if (completed !== null && (record.completedAt !== null) !== completed) return false;
 			return true;
 		})
@@ -252,7 +267,7 @@ export async function applyOperations(
 		let id: string;
 		let before: RecordState | null = null;
 		if (operation.action === 'create') {
-			id = randomUUID();
+			id = operation.recordId ?? randomUUID();
 		} else {
 			id = operation.id;
 			if (!UUID.test(id) || touched.has(id)) continue;
@@ -354,13 +369,26 @@ export async function listTasks(account: Account): Promise<TaskView[]> {
 	}));
 }
 
+/** Lists the account's notes, newest first. */
+export async function listNotes(account: Account): Promise<StoredRecord[]> {
+	const rows = await db
+		.select()
+		.from(records)
+		.where(and(eq(records.userId, account.id), eq(records.type, 'note')));
+	return rows
+		.map((row) => decryptRecord(account, row))
+		.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+}
+
 /**
- * Completes, reopens, or deletes one of the account's tasks from a tap. Returns the
- * logged operation's ID, or null when the task is gone or already in that state.
+ * Completes, reopens, or deletes one of the account's records of `type` from a tap.
+ * Returns the logged operation's ID, or null when the record is gone or already in
+ * that state.
  */
-export async function changeTask(
+export async function changeRecord(
 	account: Account,
 	id: string,
+	type: ItemType,
 	action: 'complete' | 'reopen' | 'delete',
 	today: string
 ): Promise<string | null> {
@@ -371,7 +399,7 @@ export async function changeTask(
 			.from(records)
 			.where(ownedRecord(account, id))
 			.limit(1);
-		if (row?.type !== 'task') return null;
+		if (row?.type !== type) return null;
 		const [operationId] = await applyOperations(tx, account, null, [{ action, id }], today);
 		return operationId ?? null;
 	});

@@ -1,5 +1,8 @@
 node_modules
 
+# Downloaded by scripts/fetch-models.ts
+/models/bge-small-en-v1.5
+
 # Output
 .output
 .vercel

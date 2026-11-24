@@ -34,6 +34,8 @@ export interface ItemFields {
 	 * it, a dated task is reminded at a fixed hour on its date.
 	 */
 	remindAt: string | null;
+	/** The named list a note belongs to, such as "Movies to watch". */
+	list: string | null;
 }
 
 /** Fills in fields that records saved before they existed lack. */
@@ -47,6 +49,7 @@ export function withDefaults(fields: Partial<ItemFields> & { title: string }): I
 		important: false,
 		repeat: null,
 		remindAt: null,
+		list: null,
 		...fields
 	};
 }
@@ -74,6 +77,14 @@ export interface TaskView extends ItemFields {
 	id: string;
 	/** ISO timestamp of when it was completed, or null while open. */
 	completedAt: string | null;
+}
+
+/** A note as the Knowledge screen shows it. */
+export interface NoteView extends ItemFields {
+	id: string;
+	createdAt: string;
+	/** How many passages of a PDF's text the note holds, or 0 for a plain note. */
+	passages: number;
 }
 
 /** Describes a repeat rule, for example "every 2 weeks". */

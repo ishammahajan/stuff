@@ -1,4 +1,13 @@
-import { boolean, customType, index, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import {
+	boolean,
+	customType,
+	index,
+	integer,
+	pgTable,
+	text,
+	timestamp,
+	uuid
+} from 'drizzle-orm/pg-core';
 import type { CaptureStatus, ItemType, OperationKind } from '../../items.ts';
 
 const bytea = customType<{ data: Buffer }>({
@@ -89,6 +98,35 @@ export const records = pgTable(
 		body: bytea('body').notNull()
 	},
 	(table) => [index('records_user_type_idx').on(table.userId, table.type)]
+);
+
+// Text that search by meaning compares, with its embedding: a note's own text
+// (`note`), or a passage of a document's text kept with its note (`document`).
+// Deleting the note deletes them, and undoing that delete brings back the note only.
+export const passages = pgTable(
+	'passages',
+	{
+		// Set by the app, because the ID is part of the encryption context.
+		id: uuid('id').primaryKey(),
+		userId: uuid('user_id')
+			.notNull()
+			.references(() => users.id, { onDelete: 'cascade' }),
+		recordId: uuid('record_id')
+			.notNull()
+			.references(() => records.id, { onDelete: 'cascade' }),
+		kind: text('kind').$type<'note' | 'document'>().notNull(),
+		// The passage's place in its document, from 0.
+		position: integer('position').notNull(),
+		// Encrypted JSON: a document passage's `{ text, page }`, or the hash of the
+		// note text that was embedded. Context: `passages:<id>:body`.
+		body: bytea('body').notNull(),
+		// Encrypted float32 embedding. Context: `passages:<id>:embedding`.
+		embedding: bytea('embedding').notNull()
+	},
+	(table) => [
+		index('passages_user_idx').on(table.userId),
+		index('passages_record_idx').on(table.recordId)
+	]
 );
 
 // A user's calendar subscription of task reminders. Apple fetches it while the user

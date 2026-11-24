@@ -3,6 +3,13 @@ import { and, desc, eq, exists, inArray, isNotNull, ne, or, sql } from 'drizzle-
 import type { CaptureStatus, CaptureView, ItemType, OperationView } from '../items.ts';
 import type { Account } from './auth.ts';
 import { refreshFeedQuietly } from './calendar.ts';
+import {
+	documentPassages,
+	pdfPages,
+	searchKnowledge,
+	storePassages,
+	type DocumentPassage
+} from './knowledge.ts';
 import { decrypt, decryptJson, encrypt, encryptJson } from './crypto.ts';
 import { db } from './db/index.ts';
 import { captures, operations } from './db/schema.ts';
@@ -10,11 +17,13 @@ import { interpretMemo, type ProposedQuestion, type ReplyContext } from './openr
 import {
 	applyOperations,
 	describeRecords,
+	listNames,
 	listOperations,
 	listRecords,
 	loadRecords,
 	searchRecords,
 	snapshot,
+	summary,
 	type ProposedOperation,
 	type Transaction
 } from './records.ts';
@@ -180,7 +189,8 @@ async function finishCapture(
 	id: string,
 	body: CaptureBody,
 	proposed: ProposedOperation[],
-	answers: string | null
+	answers: string | null,
+	document: { recordId: string; passages: DocumentPassage[] } | null = null
 ): Promise<void> {
 	const status: CaptureStatus = body.question ? 'asking' : 'done';
 	try {
@@ -198,6 +208,7 @@ async function finishCapture(
 				.returning({ id: captures.id });
 			if (updated.length === 0) throw new AlreadyDone();
 			await applyOperations(tx, account, id, proposed, body.localDate);
+			if (document) await storePassages(tx, account, document.recordId, document.passages);
 			if (answers) await closeQuestion(tx, account, answers, 'Answered by voice');
 		});
 		if (proposed.length > 0) await refreshFeedQuietly(account);
@@ -306,15 +317,20 @@ async function interpretCapture(account: Account, id: string): Promise<void> {
 			}
 		: null;
 
+	// A PDF's text is read and embedded while the model works on the memo.
+	const reading = file?.info.type === 'application/pdf' ? readDocument(id, file.data) : null;
+
 	let result;
 	try {
 		const [all, settings] = await Promise.all([loadRecords(account), loadSettings(account)]);
 		result = await interpretMemo({ audio, file }, {
 			names: settings.names,
+			lists: listNames(all),
 			localDate: body.localDate,
 			timeZone: body.timeZone,
 			snapshot: snapshot(all),
 			search: (query, type) => searchRecords(all, query, type),
+			searchKnowledge: (query) => searchKnowledge(account, all, query, (note) => summary(note)),
 			list: (filter) => listRecords(all, filter),
 			reply,
 			screen: body.screen ?? null,
@@ -329,14 +345,41 @@ async function interpretCapture(account: Account, id: string): Promise<void> {
 		return;
 	}
 
+	// The document's text is kept with the first note the memo creates, which the
+	// instructions make the note about the document.
+	const passages = reading ? await reading : null;
+	const note = result.operations.find(
+		(operation) => operation.action === 'create' && operation.type === 'note'
+	);
+	let document = null;
+	if (passages?.length && note?.action === 'create') {
+		note.recordId = randomUUID();
+		document = { recordId: note.recordId, passages };
+	}
+
 	const question = result.question ? { ...result.question, answer: null } : null;
 	await finishCapture(
 		account,
 		id,
 		{ ...body, transcript: result.transcript, answer: result.answer, question, error: null },
 		result.operations,
-		reply ? body.replyTo! : null
+		reply ? body.replyTo! : null,
+		document
 	);
+}
+
+/**
+ * A PDF's text in embedded passages, or null when it has too little text, such as a
+ * scan. A failure is logged and treated as no text, so the memo is still filed.
+ */
+async function readDocument(id: string, pdf: Buffer): Promise<DocumentPassage[] | null> {
+	try {
+		const pages = await pdfPages(pdf);
+		return pages && (await documentPassages(pages));
+	} catch (error) {
+		console.error(`Reading the PDF of capture ${id} failed:`, error);
+		return null;
+	}
 }
 
 /**

@@ -28,6 +28,7 @@
 		const renamed = previous && previous.title !== item.title ? `was “${previous.title}”` : '';
 		return [
 			renamed,
+			item.list ? `In ${item.list}` : '',
 			item.important ? 'Important' : '',
 			money(item),
 			item.date,
