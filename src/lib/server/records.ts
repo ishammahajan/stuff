@@ -128,7 +128,7 @@ const SNAPSHOT_LIMITS: Record<ItemType, number> = { task: 50, note: 20, expense:
 
 /** A short form of a record for the model. Empty fields are left out. */
 export function summary(record: StoredRecord, detailsLimit?: number) {
-	const { title, details, amount, currency, date, tags, important, repeat, remindAt, list } =
+	const { title, details, amount, currency, date, tags, important, repeat, remindAt, list, category } =
 		record.fields;
 	return {
 		id: record.id,
@@ -143,6 +143,7 @@ export function summary(record: StoredRecord, detailsLimit?: number) {
 		...(repeat ? { repeat: describeRepeat(repeat) } : {}),
 		...(remindAt ? { remindAt } : {}),
 		...(list ? { list } : {}),
+		...(category ? { category } : {}),
 		...(record.completedAt ? { completed: true } : {})
 	};
 }
@@ -378,6 +379,15 @@ export async function listNotes(account: Account): Promise<StoredRecord[]> {
 	return rows
 		.map((row) => decryptRecord(account, row))
 		.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+}
+
+/** Lists the account's expenses and income. */
+export async function listMoney(account: Account): Promise<StoredRecord[]> {
+	const rows = await db
+		.select()
+		.from(records)
+		.where(and(eq(records.userId, account.id), inArray(records.type, ['expense', 'income'])));
+	return rows.map((row) => decryptRecord(account, row));
 }
 
 /**

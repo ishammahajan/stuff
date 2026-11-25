@@ -236,8 +236,32 @@ client for an answer or a tap) to place a repeating task's next date.
   then the others, newest first in each. Taps: the pencil (edit by voice), select
   and drag onto the pill, and × (`POST /api/notes/{id}`, with an Undo). Deleting a
   note deletes its passages, and Undo brings back the note but not the PDF text.
-- Tasks and Knowledge share the selection and drag logic in
+- Tasks, Knowledge, and Budget share the selection and drag logic in
   `src/lib/selection.svelte.ts` and `src/lib/SelectionBar.svelte`.
+
+### Budget
+
+- Expenses and income are `records` of type `expense` and `income`. An expense has
+  a `category`: the ID of one of the user's budget categories.
+- The budget lives in **Settings** (`budget`, the `Budget` type in
+  `src/lib/items.ts`): categories, each with a short random ID, a name, and a
+  monthly amount; an optional fixed monthly income; and the currency (INR).
+  Expenses refer to the ID, so renaming a category keeps its expenses. An expense
+  whose category was removed counts as Uncategorised.
+- The user chose the amounts once from a runway calculation done in conversation,
+  not in the app, and edits them on the Budget screen at any time. The app never
+  recalculates them.
+- **Each month starts fresh:** unspent money doesn't carry over.
+- The prompt lists the categories (`categoriesInstructions`), and the model files
+  each expense under one.
+- `src/routes/budget` shows a month at a time: spent, budget, and left in total
+  and per category, the fixed income and how much of it is unbudgeted, and the
+  month's records. A record counts on its `date`, or on the day it was made. The
+  grouping runs in the browser, which knows the local date. Amounts in another
+  currency are listed but not added up.
+- **Edit budget** opens a form that replaces the categories and the monthly
+  income (the `save` action). Taps on a record: the pencil (edit by voice), select
+  and drag onto the pill, and × (`POST /api/money/{id}`, with an Undo).
 
 ### Reminders
 
@@ -268,6 +292,8 @@ Per-user settings live in `users.settings`, encrypted JSON (`Settings` in
 than a tile, edits them. For now that is **Names**: proper nouns the user types
 (people, places, companies), added one at a time or comma-separated, up to 200.
 A new spelling of a listed name replaces it. Every capture's prompt lists them.
+The budget is stored in the same JSON and edited on the Budget screen (see
+**Budget**).
 
 **Appearance** (System, Light, or Dark) is kept per device in `localStorage`
 (`theme`), not on the server. An inline script in `src/app.html` sets
@@ -348,14 +374,32 @@ Remove each point from this section as it lands, and describe the result in **Ma
   a statement import. Budget may add a static map (its categories) to the snapshot.
 - **Model provider:** stay on OpenRouter. Calling Google directly, so that only
   Google receives the audio, was considered and rejected on 2026-11-18.
-- **Order:** the Budget utility next (Tasks and Knowledge are built). Read
-  `~/dev/projects/budgeting` before building Budget.
 - **URLs in Knowledge:** saving an article from a link was put off.
+
+### Budget, remaining parts
+
+Built in this order. `~/dev/projects/budgeting` holds the earlier plan (a Google
+Sheet and a Python script, replaced by this app). Its notes on the ICICI statement
+formats, payee extraction, dedupe keys, and card fee rows still apply.
+
+- **Splits:** an expense records who shared it and each person's share. The model
+  works them out from what is said, a photo of the bill, or both. Only the user's
+  own share counts toward the budget. The Budget screen lists the expenses with
+  shares not yet paid back, with each share, and a small button settles a share.
+  No per-person balances.
+- **Statement import:** the ICICI savings statement (BIFF `.xls`) and the card
+  statement (an `.xlsx` named `.xls`), parsed in the app. Classification is by
+  rules only, and no statement row goes to the model. A rule matches a payee
+  (and VPA) and is learned when the user picks a category for a row. Rows no rule
+  matches wait in a review list before they become records. Card bill payments
+  are transfers, not spending, and card fee rows take their purchase's category.
+  The statement file is deleted once its rows are reviewed.
+- **No double counting:** a statement row merges into an expense recorded by voice
+  when the amount matches within ±3 days and there is exactly one such expense.
+  Otherwise the row waits in review, asking whether it is the same expense.
 
 ### Capture interface, remaining parts
 
-- **Drag to edit on Budget:** Tasks and Knowledge have it. Budget reuses
-  `selection.svelte.ts` the same way.
 - **Home screen:** later, today's tasks and the month's spending join the tiles.
 - **Not wanted for now:** per-user spending caps. The OpenRouter key has a daily
   cap. Build limits only when a real problem appears.
@@ -393,7 +437,9 @@ Remove each point from this section as it lands, and describe the result in **Ma
   the link.
 - To test the production build, run `pnpm build`, then
   `env ORIGIN=http://localhost:3000 PORT=3000 BODY_SIZE_LIMIT=20M node --env-file=.env build`
-  (also in `.claude/launch.json`).
+  (also in `.claude/launch.json`). `stuff-dev` in the same file runs `vite dev`
+  on port 5174 for when port 3000 is taken; create its account with
+  `pnpm invite --origin http://localhost:5174`.
 - To test capture without a microphone, post a WAV file to `/api/capture` with a
   session cookie, the `Origin` header, and `localDate` and `timeZone` form fields.
   In a browser, replace `navigator.mediaDevices.getUserMedia` with an

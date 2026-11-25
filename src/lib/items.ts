@@ -36,6 +36,8 @@ export interface ItemFields {
 	remindAt: string | null;
 	/** The named list a note belongs to, such as "Movies to watch". */
 	list: string | null;
+	/** An expense's budget category, by its ID in the budget settings. */
+	category: string | null;
 }
 
 /** Fills in fields that records saved before they existed lack. */
@@ -50,6 +52,7 @@ export function withDefaults(fields: Partial<ItemFields> & { title: string }): I
 		repeat: null,
 		remindAt: null,
 		list: null,
+		category: null,
 		...fields
 	};
 }
@@ -85,6 +88,39 @@ export interface NoteView extends ItemFields {
 	createdAt: string;
 	/** How many passages of a PDF's text the note holds, or 0 for a plain note. */
 	passages: number;
+}
+
+/** A money record as the Budget screen shows it. */
+export interface MoneyView extends ItemFields {
+	id: string;
+	type: 'expense' | 'income';
+	createdAt: string;
+}
+
+/** A budget category and how much it gets each month. */
+export interface Category {
+	/** A short random ID, which expenses refer to, so a rename keeps them. */
+	id: string;
+	name: string;
+	monthly: number;
+}
+
+/** The user's budget. Each month starts fresh: unspent money doesn't carry over. */
+export interface Budget {
+	categories: Category[];
+	/** A fixed income expected each month, or null. */
+	monthlyIncome: number | null;
+	/** ISO 4217 code that amounts without a currency are in. */
+	currency: string;
+}
+
+/** Formats an amount of money in the budget's currency, without decimals for whole numbers. */
+export function formatMoney(amount: number, currency: string): string {
+	return new Intl.NumberFormat('en-IN', {
+		style: 'currency',
+		currency,
+		maximumFractionDigits: Number.isInteger(amount) ? 0 : 2
+	}).format(amount);
 }
 
 /** Describes a repeat rule, for example "every 2 weeks". */

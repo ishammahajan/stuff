@@ -13,6 +13,12 @@
 				"build"
 			],
 			"port": 3000
+		},
+		{
+			"name": "stuff-dev",
+			"runtimeExecutable": "pnpm",
+			"runtimeArgs": ["dev", "--port", "5174", "--strictPort"],
+			"port": 5174
 		}
 	]
 }

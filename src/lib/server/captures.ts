@@ -326,6 +326,7 @@ async function interpretCapture(account: Account, id: string): Promise<void> {
 		result = await interpretMemo({ audio, file }, {
 			names: settings.names,
 			lists: listNames(all),
+			categories: settings.budget.categories.map(({ id, name }) => ({ id, name })),
 			localDate: body.localDate,
 			timeZone: body.timeZone,
 			snapshot: snapshot(all),

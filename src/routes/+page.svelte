@@ -4,7 +4,7 @@
 		{ name: 'Inbox', description: 'Review what was captured', href: '/inbox' },
 		{ name: 'Tasks', description: 'Things to do', href: '/tasks' },
 		{ name: 'Knowledge', description: 'Ideas and recommendations', href: '/knowledge' },
-		{ name: 'Budget', description: 'Spending and income' }
+		{ name: 'Budget', description: 'Spending and income', href: '/budget' }
 	];
 </script>
 

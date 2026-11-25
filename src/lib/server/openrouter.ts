@@ -55,7 +55,8 @@ const OPERATIONS_SCHEMA = {
 				additionalProperties: false
 			},
 			remindAt: { type: ['string', 'null'] },
-			list: { type: ['string', 'null'] }
+			list: { type: ['string', 'null'] },
+			category: { type: ['string', 'null'] }
 		},
 		required: [
 			'action',
@@ -70,7 +71,8 @@ const OPERATIONS_SCHEMA = {
 			'important',
 			'repeat',
 			'remindAt',
-			'list'
+			'list',
+			'category'
 		],
 		additionalProperties: false
 	}
@@ -219,7 +221,8 @@ Fields:
 - repeat: for a task that recurs, such as "every Monday" or "every 2 weeks", set every and unit, and set date to the first occurrence. To stop a task repeating, set every to 0. Otherwise null.
 - remindAt: YYYY-MM-DDTHH:MM in the speaker's local time, when the speaker asks to be reminded at a time, such as "remind me at 3 pm to call the bank". Also set date to that day. A dated task without a time is reminded in the morning of its date, so leave remindAt null when no time is said. To remove a reminder time, set it to an empty string. Otherwise null.
 - list: for a note, the name of the list it belongs to, such as "Movies to watch" or "Books". Use it when the speaker names a list or adds something that is one of many of a kind, such as a movie, book, restaurant, or gift idea. Put each item in its own note, never several items in one note, so each can be changed or removed alone. Reuse an existing list's exact name when one fits. To take a note out of its list, set it to an empty string. Null for other types.
-${listsInstructions(context.lists)}${namesInstructions(context.names)}${screenInstructions(context)}
+- category: for an expense, the ID of the budget category it belongs to, from the list below. Pick the closest fit by what the money was for. Use null when no category fits or there is no list. Null for other types.
+${categoriesInstructions(context.categories)}${listsInstructions(context.lists)}${namesInstructions(context.names)}${screenInstructions(context)}
 Existing records:
 Below are some of the speaker's records, one JSON object per line: open tasks and the latest notes, expenses, and income. This list is partial. When the speaker refers to a record that is not listed, call ${SEARCH_TOOL} to find it. Use only IDs from this list, from the selected records, or from ${SEARCH_TOOL} and ${LIST_TOOL} results. When the speaker talks about a record that already exists, update or complete it instead of creating a duplicate.
 
@@ -246,6 +249,12 @@ const SCREEN_NAMES: Record<ItemType, string> = {
 	expense: 'Budget',
 	income: 'Budget'
 };
+
+/** The speaker's budget categories, so expenses can be filed under one. */
+function categoriesInstructions(categories: { id: string; name: string }[]): string {
+	if (categories.length === 0) return '';
+	return `\nBudget categories, as ID and name. An expense's category field holds the ID:\n${categories.map(({ id, name }) => JSON.stringify({ id, name })).join('\n')}\n`;
+}
 
 /** The speaker's note lists, so new items go into the same ones. */
 function listsInstructions(lists: string[]): string {
@@ -312,6 +321,8 @@ export interface FilingContext {
 	names: string[];
 	/** The names of the speaker's note lists, most used first. */
 	lists: string[];
+	/** The speaker's budget categories. */
+	categories: { id: string; name: string }[];
 }
 
 export interface QuestionOption {
@@ -382,6 +393,11 @@ function cleanFields(raw: Record<string, unknown>): Partial<ItemFields> {
 	// An empty string takes a note out of its list.
 	if (raw.list === '') fields.list = null;
 	else if (typeof raw.list === 'string' && raw.list.trim()) fields.list = raw.list.trim().slice(0, 60);
+	// Category IDs are 8 hex characters. An empty string removes the category.
+	if (raw.category === '') fields.category = null;
+	else if (typeof raw.category === 'string' && /^[0-9a-f]{8}$/.test(raw.category)) {
+		fields.category = raw.category;
+	}
 	if (typeof raw.repeat === 'object' && raw.repeat !== null) {
 		const { every, unit } = raw.repeat as Record<string, unknown>;
 		// Every 0 means the task stops repeating.
@@ -423,7 +439,8 @@ function parseOperations(value: unknown): ProposedOperation[] {
 						important: fields.important ?? false,
 						repeat: fields.repeat ?? null,
 						remindAt: fields.remindAt ?? null,
-						list: operation.type === 'note' ? (fields.list ?? null) : null
+						list: operation.type === 'note' ? (fields.list ?? null) : null,
+						category: operation.type === 'expense' ? (fields.category ?? null) : null
 					}
 				});
 				break;
