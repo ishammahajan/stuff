@@ -22,7 +22,13 @@ export const MAX_AMOUNT = 1e12;
 
 const DEFAULTS: Settings = {
 	names: [],
-	budget: { categories: [], monthlyIncome: null, currency: 'INR' }
+	budget: {
+		categories: [],
+		monthlyIncome: null,
+		currency: 'INR',
+		rules: [],
+		balances: { savings: null, card: null }
+	}
 };
 
 /** A new category ID: short, random, and stable across renames. */
@@ -54,8 +60,14 @@ export async function loadSettings(account: Account): Promise<Settings> {
 		.from(users)
 		.where(eq(users.id, account.id));
 	if (!row?.settings) return structuredClone(DEFAULTS);
-	const stored = decryptJson<Partial<Settings>>(account.key, row.settings, settingsContext(account.id));
-	return { ...structuredClone(DEFAULTS), ...stored };
+	const stored = decryptJson<Partial<Settings>>(
+		account.key,
+		row.settings,
+		settingsContext(account.id)
+	);
+	const defaults = structuredClone(DEFAULTS);
+	// Fills budget fields that settings saved before they existed lack.
+	return { ...defaults, ...stored, budget: { ...defaults.budget, ...stored.budget } };
 }
 
 export async function saveSettings(account: Account, settings: Settings): Promise<void> {

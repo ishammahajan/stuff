@@ -3,7 +3,14 @@
 	import { invalidateAll } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { attached } from '#lib/attached.svelte.ts';
-	import { formatMoney, localDate, ownShare, type MoneyView } from '#lib/items.ts';
+	import {
+		formatMoney,
+		localDate,
+		ownShare,
+		type MoneyView,
+		type ReviewRow,
+		type StatementRule
+	} from '#lib/items.ts';
 	import { recent } from '#lib/recent.svelte.ts';
 	import { Selection } from '#lib/selection.svelte.ts';
 	import SelectionBar from '#lib/SelectionBar.svelte';
@@ -195,6 +202,49 @@
 
 	$effect(() => selection.prune(records.map((record) => record.id)));
 
+	const shortDate = (date: string) =>
+		new Date(`${date}T00:00:00`).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+
+	// Importing a statement. The file is parsed on the server and never stored.
+	let importForm = $state<HTMLFormElement>();
+	let importing = $state(false);
+	let importNote = $state('');
+	let importError = $state('');
+
+	function describeImport(result: Record<string, number>): string {
+		const parts = [
+			result.added && `${result.added} added`,
+			result.merged && `${result.merged} matched to expenses you recorded`,
+			result.ignored && `${result.ignored} skipped as not spending`,
+			result.review && `${result.review} to review`,
+			result.known && `${result.known} imported before`
+		].filter(Boolean);
+		return parts.length ? `Imported: ${parts.join(', ')}.` : 'The statement had no transactions.';
+	}
+
+	// Rows in review. A payee's rows are decided together, except a row that may be
+	// an expense already recorded, which is decided on its own.
+	let reviewGroups = $derived.by(() => {
+		const groups = new Map<string, ReviewRow[]>();
+		for (const row of data.review) {
+			const key =
+				row.candidates.length > 0 || !row.payee
+					? row.id
+					: [row.account, row.direction, row.payee.toLowerCase(), (row.vpa ?? '').toLowerCase()].join(
+							'|'
+						);
+			groups.set(key, [...(groups.get(key) ?? []), row]);
+		}
+		return [...groups.values()];
+	});
+	let reviewing = $state(false);
+
+	function describeRule(rule: StatementRule): string {
+		if (rule.action === 'income') return 'Income';
+		if (rule.action === 'ignore') return rule.direction === 'debit' ? 'Not spending' : 'Not income';
+		return (rule.category && categoryNames.get(rule.category)) ?? 'Removed category';
+	}
+
 	// Reloads when a capture finishes, since it may have filed an expense.
 	let seen: string | null = null;
 	$effect(() => {
@@ -228,9 +278,58 @@
 	<div class="heading">
 		<h1>Budget</h1>
 		{#if !editing}
-			<button class="pill-button" onclick={startEditing}>Edit budget</button>
+			<div class="heading-actions">
+				<form
+					method="POST"
+					action="?/import"
+					enctype="multipart/form-data"
+					bind:this={importForm}
+					use:enhance={({ formElement }) => {
+						importing = true;
+						importNote = '';
+						importError = '';
+						return async ({ result, update }) => {
+							importing = false;
+							formElement.reset();
+							if (result.type === 'success') {
+								importNote = describeImport(
+									(result.data?.imported ?? {}) as Record<string, number>
+								);
+								await update({ reset: false });
+							} else if (result.type === 'failure') {
+								importError = String(result.data?.message ?? 'That statement could not be imported.');
+							} else {
+								await update();
+							}
+						};
+					}}
+				>
+					<input type="hidden" name="localDate" value={localDate()} />
+					<label class="pill-button" class:busy={importing}>
+						{importing ? 'Importing…' : 'Import statement'}
+						<input
+							type="file"
+							name="statement"
+							accept=".xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+							disabled={importing}
+							onchange={() => importForm?.requestSubmit()}
+						/>
+					</label>
+				</form>
+				<button class="pill-button" onclick={startEditing}>Edit budget</button>
+			</div>
 		{/if}
 	</div>
+
+	{#if !editing && importNote}
+		<p class="toast" role="status">
+			<span>{importNote}</span>
+			<button onclick={() => (importNote = '')}>OK</button>
+		</p>
+	{/if}
+	{#if !editing && importError}
+		<p class="error" role="alert">{importError}</p>
+	{/if}
 
 	{#if editing}
 		<form
@@ -300,6 +399,49 @@
 			</div>
 		</form>
 	{:else}
+		{#if data.balance}
+			{@const balance = data.balance}
+			<details class="balance">
+				<summary>
+					<span class="label">Balance</span>
+					<span class="value" class:over={balance.total < 0}>{money(balance.total)}</span>
+				</summary>
+				<ul>
+					<li>
+						<span>Savings on {shortDate(balance.savings.date)}</span>
+						<span>{money(balance.savings.amount)}</span>
+					</li>
+					{#if balance.card}
+						<li>
+							<span>Card bill on {shortDate(balance.card.date)}</span>
+							<span>−{money(balance.card.amount)}</span>
+						</li>
+					{/if}
+					{#if balance.cardPaid > 0}
+						<li>
+							<span>Card bill paid since</span>
+							<span>+{money(balance.cardPaid)}</span>
+						</li>
+					{/if}
+					<li>
+						<span>Spent since</span>
+						<span>−{money(balance.spent)}</span>
+					</li>
+					{#if balance.received > 0}
+						<li>
+							<span>Received since</span>
+							<span>+{money(balance.received)}</span>
+						</li>
+					{/if}
+				</ul>
+				<p class="muted small">
+					From your latest statements, less what you recorded after them.{balance.uncounted > 0
+						? ` ${balance.uncounted} in another currency aren't counted.`
+						: ''}
+				</p>
+			</details>
+		{/if}
+
 		<nav class="month" aria-label="Month">
 			<button onclick={() => shiftMonth(-1)} aria-label="Previous month">‹</button>
 			<span>{monthName}</span>
@@ -364,6 +506,102 @@
 								{left! < 0 ? `${money(-left!)} over` : `${money(left!)} left`}
 							</span>
 						{/if}
+					</li>
+				{/each}
+			</ul>
+		{/if}
+
+		{#if reviewGroups.length > 0}
+			<h2>To review · {data.review.length}</h2>
+			<p class="muted small">
+				Statement rows no rule covers. What you choose for a payee is remembered for their next
+				rows.
+			</p>
+			<ul class="review">
+				{#each reviewGroups as group (group[0].id)}
+					{@const first = group[0]}
+					{@const total = group.reduce((sum, row) => sum + row.amount, 0)}
+					<li>
+						<span class="top">
+							<span class="title">{first.payee || first.text}</span>
+							<span class="amount" class:income={first.direction === 'credit'}
+								>{first.direction === 'credit' ? '+' : ''}{money(total)}</span
+							>
+						</span>
+						<span class="meta">
+							{[
+								first.account === 'card' ? 'Card' : 'Savings',
+								first.vpa,
+								group.length > 1
+									? `${group.length} rows, ${shortDate(first.date)} to ${shortDate(group[group.length - 1].date)}`
+									: shortDate(first.date)
+							]
+								.filter(Boolean)
+								.join(' · ')}
+						</span>
+						<details>
+							<summary>Statement text</summary>
+							<ul class="lines">
+								{#each group as row (row.id)}
+									<li>
+										<span>{shortDate(row.date)} · {money(row.amount)}</span>
+										<span class="text">{row.text}</span>
+									</li>
+								{/each}
+							</ul>
+						</details>
+						<form
+							method="POST"
+							action="?/review"
+							use:enhance={() => {
+								reviewing = true;
+								message = '';
+								return async ({ result, update }) => {
+									reviewing = false;
+									if (result.type === 'failure') {
+										message = String(result.data?.message ?? 'That did not save.');
+									}
+									await update();
+								};
+							}}
+						>
+							{#each group as row (row.id)}
+								<input type="hidden" name="ids" value={row.id} />
+							{/each}
+							<input type="hidden" name="localDate" value={localDate()} />
+							{#if first.candidates.length > 0}
+								<p class="small">The same as an expense you recorded?</p>
+								<div class="candidates">
+									{#each first.candidates as candidate (candidate.id)}
+										<button
+											class="pill-button"
+											name="choice"
+											value={`merge:${candidate.id}`}
+											formnovalidate
+											disabled={reviewing}
+										>
+											{candidate.title} · {money(candidate.amount)} · {shortDate(candidate.date)}
+										</button>
+									{/each}
+								</div>
+								<p class="small">Or a new one:</p>
+							{/if}
+							<div class="choose">
+								<select name="choice" required aria-label={`What ${first.payee || 'this'} is`}>
+									<option value="" selected disabled>Choose…</option>
+									{#if first.direction === 'debit'}
+										{#each data.budget.categories as category (category.id)}
+											<option value={`category:${category.id}`}>{category.name}</option>
+										{/each}
+										<option value="ignore">Not spending (a transfer)</option>
+									{:else}
+										<option value="income">Income</option>
+										<option value="ignore">Not income (a refund or transfer)</option>
+									{/if}
+								</select>
+								<button class="primary" disabled={reviewing}>Save</button>
+							</div>
+						</form>
 					</li>
 				{/each}
 			</ul>
@@ -446,6 +684,30 @@
 				{/each}
 			</ul>
 		{/if}
+
+		{#if data.budget.rules.length > 0}
+			<details class="rules">
+				<summary>Statement rules · {data.budget.rules.length}</summary>
+				<ul>
+					{#each data.budget.rules as rule (rule.id)}
+						<li>
+							<span class="rule">
+								<span class="title">{rule.payee}</span>
+								<span class="meta">
+									{[rule.vpa, rule.direction === 'debit' ? 'money out' : 'money in']
+										.filter(Boolean)
+										.join(' · ')} → {describeRule(rule)}
+								</span>
+							</span>
+							<form method="POST" action="?/deleteRule" use:enhance>
+								<input type="hidden" name="id" value={rule.id} />
+								<button class="delete" aria-label={`Remove the rule for ${rule.payee}`}>×</button>
+							</form>
+						</li>
+					{/each}
+				</ul>
+			</details>
+		{/if}
 	{/if}
 </main>
 
@@ -493,6 +755,132 @@
 		border-radius: 999px;
 		border: 1px solid var(--border);
 		font-size: 0.875rem;
+	}
+
+	.heading-actions {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: flex-end;
+		gap: 0.4rem;
+	}
+
+	.heading-actions form {
+		display: flex;
+	}
+
+	label.pill-button {
+		display: inline-block;
+		cursor: pointer;
+	}
+
+	label.pill-button.busy {
+		opacity: 0.6;
+	}
+
+	/* The label opens the file picker; the input itself stays out of sight. */
+	label.pill-button input {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		opacity: 0;
+		pointer-events: none;
+	}
+
+	.small {
+		font-size: 0.875rem;
+	}
+
+	.review > li {
+		display: grid;
+		gap: 0.35rem;
+		padding: 0.6rem 0.75rem;
+		border-radius: 0.875rem;
+		border: 1px solid var(--border);
+		background: var(--surface);
+	}
+
+	.review form {
+		display: grid;
+		gap: 0.4rem;
+	}
+
+	.review form p {
+		margin: 0;
+	}
+
+	.review summary,
+	.rules summary {
+		cursor: pointer;
+		font-size: 0.8125rem;
+		color: var(--muted);
+	}
+
+	.lines {
+		gap: 0.35rem;
+		margin-top: 0.35rem;
+		font-size: 0.8125rem;
+	}
+
+	.lines li {
+		display: grid;
+	}
+
+	.lines .text {
+		color: var(--muted);
+		overflow-wrap: anywhere;
+	}
+
+	.candidates {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.4rem;
+	}
+
+	.candidates .pill-button {
+		text-align: left;
+		overflow-wrap: anywhere;
+	}
+
+	.choose {
+		display: flex;
+		gap: 0.5rem;
+	}
+
+	.choose select {
+		flex: 1;
+		min-width: 0;
+		font: inherit;
+		color: inherit;
+		padding: 0.4rem 0.5rem;
+		border-radius: 0.625rem;
+		border: 1px solid var(--border);
+		background: var(--surface);
+	}
+
+	.rules {
+		margin-top: 1.5rem;
+	}
+
+	.rules ul {
+		margin-top: 0.5rem;
+	}
+
+	.rules li {
+		display: flex;
+		align-items: center;
+		gap: 0.25rem;
+		padding: 0.4rem 0.5rem 0.4rem 0.75rem;
+		border-radius: 0.875rem;
+		border: 1px solid var(--border);
+		background: var(--surface);
+	}
+
+	.rule {
+		flex: 1;
+		min-width: 0;
+		display: grid;
+		gap: 0.1rem;
 	}
 
 	.primary {
@@ -556,6 +944,39 @@
 		font-weight: 600;
 		font-variant-numeric: tabular-nums;
 		overflow-wrap: anywhere;
+	}
+
+	.balance {
+		padding: 0.75rem;
+		border-radius: 0.875rem;
+		border: 1px solid var(--border);
+		background: var(--surface);
+		margin-bottom: 1rem;
+	}
+
+	.balance summary {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		gap: 0.5rem;
+		cursor: pointer;
+	}
+
+	.balance ul {
+		gap: 0.25rem;
+		margin-top: 0.5rem;
+		font-size: 0.875rem;
+	}
+
+	.balance li {
+		display: flex;
+		justify-content: space-between;
+		gap: 0.5rem;
+		font-variant-numeric: tabular-nums;
+	}
+
+	.balance p {
+		margin: 0.5rem 0 0;
 	}
 
 	.income-line {

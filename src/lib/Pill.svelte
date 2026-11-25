@@ -173,7 +173,10 @@
 	function attach(file: File | undefined) {
 		if (!file) return;
 		message = '';
-		if (!file.type.startsWith('image/') && file.type !== 'application/pdf') {
+		if (/\.xlsx?$/i.test(file.name) || file.type.includes('spreadsheet') || file.type.includes('ms-excel')) {
+			// Statements never go to the model; Budget imports them.
+			message = 'To add a bank statement, use Import statement on the Budget screen.';
+		} else if (!file.type.startsWith('image/') && file.type !== 'application/pdf') {
 			message = 'Only images and PDFs can be sent.';
 		} else if (file.size > MAX_FILE_BYTES) {
 			message = 'The file is larger than 10 MB.';

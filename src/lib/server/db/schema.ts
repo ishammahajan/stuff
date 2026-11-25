@@ -177,3 +177,24 @@ export const operations = pgTable(
 		index('operations_record_idx').on(table.recordId)
 	]
 );
+
+// Transactions read from bank statements. A row waits in review (`review`) until the
+// user decides what it is, then keeps only its key and outcome (`done`), so the same
+// transaction in a later statement is recognised and skipped. The statement file
+// itself is never stored.
+export const statementRows = pgTable(
+	'statement_rows',
+	{
+		// Set by the app, because the ID is part of the encryption context.
+		id: uuid('id').primaryKey(),
+		userId: uuid('user_id')
+			.notNull()
+			.references(() => users.id, { onDelete: 'cascade' }),
+		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+		status: text('status').$type<'review' | 'done'>().notNull(),
+		// Encrypted `StatementRowBody` JSON (`src/lib/server/imports.ts`).
+		// Context: `statement_rows:<id>:body`.
+		body: bytea('body').notNull()
+	},
+	(table) => [index('statement_rows_user_status_idx').on(table.userId, table.status)]
+);

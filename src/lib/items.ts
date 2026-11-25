@@ -131,6 +131,79 @@ export interface Budget {
 	monthlyIncome: number | null;
 	/** ISO 4217 code that amounts without a currency are in. */
 	currency: string;
+	/** What to do with statement rows of a known payee, learned in review. */
+	rules: StatementRule[];
+	/** From the latest statement of each account imported so far. */
+	balances: {
+		/** The savings balance after the statement's latest row. */
+		savings: StatementBalance | null;
+		/** The card's total amount due on its statement date. */
+		card: StatementBalance | null;
+	};
+}
+
+/** An amount a statement gives as of a day. */
+export interface StatementBalance {
+	amount: number;
+	/** ISO date, YYYY-MM-DD. */
+	date: string;
+}
+
+/**
+ * The money the user has: the latest savings balance less the latest card bill,
+ * updated by what was recorded after each statement.
+ */
+export interface BalanceView {
+	savings: StatementBalance;
+	card: StatementBalance | null;
+	/** Expenses after the statements: card ones after the card's, others after the savings'. */
+	spent: number;
+	/** Income after the statements, counted the same way. */
+	received: number;
+	/** Card bill payments in the savings statement after the card statement date. */
+	cardPaid: number;
+	total: number;
+	/** Records after the statements in another currency, which aren't counted. */
+	uncounted: number;
+}
+
+/**
+ * Files a payee's statement rows without review: money out under a category or as
+ * not spending, money in as income or not.
+ */
+export interface StatementRule {
+	id: string;
+	/** As the statement shortens it; matched without regard to case. */
+	payee: string;
+	/** The UPI address's visible part, or null when the bank gives none. */
+	vpa: string | null;
+	direction: 'debit' | 'credit';
+	action: 'category' | 'income' | 'ignore';
+	/** The category's ID, for `category` only. */
+	category: string | null;
+}
+
+/** An expense recorded by voice that a statement row may be. */
+export interface ReviewCandidate {
+	id: string;
+	title: string;
+	amount: number;
+	date: string;
+}
+
+/** A statement row waiting for the user to say what it is. */
+export interface ReviewRow {
+	id: string;
+	account: 'savings' | 'card';
+	date: string;
+	direction: 'debit' | 'credit';
+	amount: number;
+	payee: string;
+	vpa: string | null;
+	/** The bank's description of the row. */
+	text: string;
+	/** Expenses this may be; when there are some, the row is reviewed on its own. */
+	candidates: ReviewCandidate[];
 }
 
 /** Formats an amount of money in the budget's currency, without decimals for whole numbers. */

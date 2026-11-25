@@ -270,6 +270,54 @@ client for an answer or a tap) to place a repeating task's next date.
 - **Edit budget** opens a form that replaces the categories and the monthly
   income (the `save` action). Taps on a record: the pencil (edit by voice), select
   and drag onto the pill, and × (`POST /api/money/{id}`, with an Undo).
+- **Statement import:** **Import statement** on the Budget screen (the `import`
+  action) takes an ICICI savings or credit card statement. No statement row ever
+  goes to the model, and the file is never stored: it is parsed in the request.
+  - `src/lib/server/spreadsheet.ts` reads the first sheet of an `.xls` (BIFF8 in
+    an OLE2 file; the savings statement) or an `.xlsx` (the card statement, which
+    is named `.xls`), by the file's first bytes. It has no dependencies, because
+    SheetJS's fixed versions aren't on npm.
+  - `src/lib/server/statements.ts` finds the header row by its labels and parses
+    the rows. Savings: a remark that spills onto a row of its own is joined
+    without a space, parsing stops at the legend, and the running balances must
+    add up or nothing is imported. A UPI remark gives the payee and the VPA.
+    Card: amounts end in `Dr.` or `Cr.`, and Markup Fee and GST rows are folded
+    into the purchase before them on the same day.
+  - Each row has a key (the UPI or card reference number, or the row's own values
+    without one), so overlapping statements import a row once.
+  - `src/lib/server/imports.ts` files each new row: a credit card bill payment
+    (`isCardPayment`, on either statement) is skipped as a transfer; money out
+    that matches exactly one expense recorded by voice (its whole amount, within
+    ±3 days, not already matched) is merged into it, and with several it waits in
+    review asking which; otherwise a rule files it, or it waits in review.
+  - The bill-payment patterns are a guess: no statement with a payment has been
+    seen yet. A missed one waits in review, where Not spending makes a rule.
+  - **Rules** (`budget.rules` in Settings) match a payee, its VPA, and the
+    direction, and file the row under a category, as income, or as not spending
+    or not income. Choosing for a payee in review (the `review` action) settles
+    all of their rows and saves the rule, replacing an earlier one. Statement
+    rules at the foot of the screen lists them, with × (`deleteRule`).
+  - A filed row becomes an ordinary expense or income record: the payee as the
+    title, the amount, the date, and the category, without the bank's remark.
+  - `statement_rows` keeps a row in review (`review`, with the bank's remark)
+    until it is decided, then only its key and outcome (`done`), plus the date
+    and amount of a card bill payment.
+- **Balance:** each import stores the statement's balance in
+  `budget.balances`: the savings balance after the latest row, and the card's
+  total amount due with its statement date (from the summary above the rows). A
+  statement replaces the stored one when its date is later, or on the same day
+  when it brings new rows for that day, so importing an older file again changes
+  nothing. `currentBalance` in `imports.ts` works out what the user has:
+  - the savings balance, less the card's amount due;
+  - less expenses and plus income dated after the statements. A record that came
+    from a card statement counts after the card's statement date, since the bill
+    includes the ones before it. Any other record counts after the savings date;
+  - plus card bill payments in the savings statement between the card's
+    statement date and the savings date, since the bill still includes them.
+
+  It shows at the top of the Budget screen, with the breakdown, once a savings
+  statement has been imported. Cash, and settled shares paid back in cash, are
+  not tracked, so the figure drifts until the next statement resets it.
 
 ### Reminders
 
@@ -324,9 +372,9 @@ The budget is stored in the same JSON and edited on the Budget screen (see
   dropping one anywhere on the page also attaches it. The file shows as a chip
   above the pill with **Send** and ×. Send sends it alone; recording instead sends
   it with the recording as a voice note. The chip clears once the upload succeeds.
-  Spreadsheets (XLSX, XLS) aren't accepted yet: they come with statement import in
-  Budget. The iPhone Share sheet can't send here, because only an installed web
-  app can be a share target.
+  A spreadsheet is refused with a pointer to Import statement on Budget, so a
+  statement never reaches the model. The iPhone Share sheet can't send here,
+  because only an installed web app can be a share target.
 - **No auto-record:** opening the app never starts a recording.
 - **Tabs on iPhone:** a page can't close a Safari tab it didn't open, and Shortcuts
   can't open a Home Screen web app, so the app runs in Safari. The action-button
@@ -349,8 +397,8 @@ to be fresh. Fetch that data from the client instead, as the recent panel does.
 ### Data
 
 - `src/lib/server/db/schema.ts` defines the tables: `users`, `invites`, `sessions`,
-  `captures`, `records`, `operations`, `passages`, and `calendar_feeds`. Each encrypted column
-  notes its context string.
+  `captures`, `records`, `operations`, `passages`, `calendar_feeds`, and
+  `statement_rows`. Each encrypted column notes its context string.
 - `records` is shared by all utilities. Each row has a user, a type, timestamps,
   `completed_at` for tasks, and an encrypted body (`ItemFields`). Totals and
   searches run in memory after decryption. A utility may get its own table when
@@ -386,20 +434,13 @@ Remove each point from this section as it lands, and describe the result in **Ma
 
 ### Budget, remaining parts
 
-Built in this order. `~/dev/projects/budgeting` holds the earlier plan (a Google
-Sheet and a Python script, replaced by this app). Its notes on the ICICI statement
-formats, payee extraction, dedupe keys, and card fee rows still apply.
+`~/dev/projects/budgeting` holds the earlier plan (a Google Sheet and a Python
+script, replaced by this app) and real sample statements. The samples must never
+be committed, copied into plans, or sent to any service; test with synthetic
+statements.
 
-- **Statement import:** the ICICI savings statement (BIFF `.xls`) and the card
-  statement (an `.xlsx` named `.xls`), parsed in the app. Classification is by
-  rules only, and no statement row goes to the model. A rule matches a payee
-  (and VPA) and is learned when the user picks a category for a row. Rows no rule
-  matches wait in a review list before they become records. Card bill payments
-  are transfers, not spending, and card fee rows take their purchase's category.
-  The statement file is deleted once its rows are reviewed.
-- **No double counting:** a statement row merges into an expense recorded by voice
-  (by its whole amount, shares included) when the amount matches within ±3 days
-  and there is exactly one such expense. Otherwise the row waits in review, asking whether it is the same expense.
+- **Card bill payments:** check `isCardPayment` against the first real statement
+  pair that has one.
 
 ### Capture interface, remaining parts
 
