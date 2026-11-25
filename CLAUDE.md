@@ -259,6 +259,14 @@ client for an answer or a tap) to place a repeating task's next date.
   month's records. A record counts on its `date`, or on the day it was made. The
   grouping runs in the browser, which knows the local date. Amounts in another
   currency are listed but not added up.
+- **Splits:** an expense the user paid for others has `shares` (person, amount,
+  settled). `amount` stays the whole bill, and only the user's own part
+  (`ownShare`, the amount less the shares) counts toward the budget and shows on
+  the record. The model works the shares out from what is said and a photo of the
+  bill, and settles one when the user says it was paid back. "Owed to you" lists
+  the expenses of every month with unsettled shares, and Settle on a share
+  (`POST /api/money/{id}` with `action: 'settle'`, `settleShare`) marks it paid,
+  with an Undo. There are no per-person balances.
 - **Edit budget** opens a form that replaces the categories and the monthly
   income (the `save` action). Taps on a record: the pencil (edit by voice), select
   and drag onto the pill, and × (`POST /api/money/{id}`, with an Undo).
@@ -382,11 +390,6 @@ Built in this order. `~/dev/projects/budgeting` holds the earlier plan (a Google
 Sheet and a Python script, replaced by this app). Its notes on the ICICI statement
 formats, payee extraction, dedupe keys, and card fee rows still apply.
 
-- **Splits:** an expense records who shared it and each person's share. The model
-  works them out from what is said, a photo of the bill, or both. Only the user's
-  own share counts toward the budget. The Budget screen lists the expenses with
-  shares not yet paid back, with each share, and a small button settles a share.
-  No per-person balances.
 - **Statement import:** the ICICI savings statement (BIFF `.xls`) and the card
   statement (an `.xlsx` named `.xls`), parsed in the app. Classification is by
   rules only, and no statement row goes to the model. A rule matches a payee
@@ -395,8 +398,8 @@ formats, payee extraction, dedupe keys, and card fee rows still apply.
   are transfers, not spending, and card fee rows take their purchase's category.
   The statement file is deleted once its rows are reviewed.
 - **No double counting:** a statement row merges into an expense recorded by voice
-  when the amount matches within ±3 days and there is exactly one such expense.
-  Otherwise the row waits in review, asking whether it is the same expense.
+  (by its whole amount, shares included) when the amount matches within ±3 days
+  and there is exactly one such expense. Otherwise the row waits in review, asking whether it is the same expense.
 
 ### Capture interface, remaining parts
 

@@ -128,8 +128,20 @@ const SNAPSHOT_LIMITS: Record<ItemType, number> = { task: 50, note: 20, expense:
 
 /** A short form of a record for the model. Empty fields are left out. */
 export function summary(record: StoredRecord, detailsLimit?: number) {
-	const { title, details, amount, currency, date, tags, important, repeat, remindAt, list, category } =
-		record.fields;
+	const {
+		title,
+		details,
+		amount,
+		currency,
+		date,
+		tags,
+		important,
+		repeat,
+		remindAt,
+		list,
+		category,
+		shares
+	} = record.fields;
 	return {
 		id: record.id,
 		type: record.type,
@@ -144,6 +156,7 @@ export function summary(record: StoredRecord, detailsLimit?: number) {
 		...(remindAt ? { remindAt } : {}),
 		...(list ? { list } : {}),
 		...(category ? { category } : {}),
+		...(shares.length ? { shares } : {}),
 		...(record.completedAt ? { completed: true } : {})
 	};
 }
@@ -411,6 +424,32 @@ export async function changeRecord(
 			.limit(1);
 		if (row?.type !== type) return null;
 		const [operationId] = await applyOperations(tx, account, null, [{ action, id }], today);
+		return operationId ?? null;
+	});
+}
+
+/**
+ * Marks one share of an expense as paid back, from a tap. The share is found by its
+ * place in the list and checked by the person's name, so a list that changed in the
+ * meantime isn't settled by mistake. Returns the logged operation's ID, or null when
+ * the expense or the unsettled share is gone.
+ */
+export async function settleShare(
+	account: Account,
+	id: string,
+	index: number,
+	person: string,
+	today: string
+): Promise<string | null> {
+	if (!UUID.test(id)) return null;
+	return db.transaction(async (tx) => {
+		const [row] = await tx.select().from(records).where(ownedRecord(account, id)).limit(1);
+		if (row?.type !== 'expense') return null;
+		const { shares } = decryptRecord(account, row).fields;
+		const share = shares[index];
+		if (!share || share.person !== person || share.settled) return null;
+		const changes = { shares: shares.map((s, i) => (i === index ? { ...s, settled: true } : s)) };
+		const [operationId] = await applyOperations(tx, account, null, [{ action: 'update', id, changes }], today);
 		return operationId ?? null;
 	});
 }

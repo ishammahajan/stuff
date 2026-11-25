@@ -38,6 +38,24 @@ export interface ItemFields {
 	list: string | null;
 	/** An expense's budget category, by its ID in the budget settings. */
 	category: string | null;
+	/**
+	 * Other people's shares of an expense the speaker paid. `amount` stays the whole
+	 * bill; only what is left after the shares counts toward the budget.
+	 */
+	shares: Share[];
+}
+
+/** One person's part of a shared expense, and whether they have paid it back. */
+export interface Share {
+	person: string;
+	amount: number;
+	settled: boolean;
+}
+
+/** The speaker's own part of an expense: the amount less everyone else's shares. */
+export function ownShare(fields: Pick<ItemFields, 'amount' | 'shares'>): number {
+	const others = fields.shares.reduce((sum, share) => sum + share.amount, 0);
+	return Math.max(0, Math.round(((fields.amount ?? 0) - others) * 100) / 100);
 }
 
 /** Fills in fields that records saved before they existed lack. */
@@ -53,6 +71,7 @@ export function withDefaults(fields: Partial<ItemFields> & { title: string }): I
 		remindAt: null,
 		list: null,
 		category: null,
+		shares: [],
 		...fields
 	};
 }

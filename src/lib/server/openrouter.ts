@@ -4,6 +4,7 @@ import {
 	OPERATION_KINDS,
 	REPEAT_UNITS,
 	type ItemFields,
+	type Share,
 	type ItemType,
 	type RepeatUnit
 } from '../items.ts';
@@ -56,7 +57,20 @@ const OPERATIONS_SCHEMA = {
 			},
 			remindAt: { type: ['string', 'null'] },
 			list: { type: ['string', 'null'] },
-			category: { type: ['string', 'null'] }
+			category: { type: ['string', 'null'] },
+			shares: {
+				type: ['array', 'null'],
+				items: {
+					type: 'object',
+					properties: {
+						person: { type: 'string' },
+						amount: { type: 'number' },
+						settled: { type: 'boolean' }
+					},
+					required: ['person', 'amount', 'settled'],
+					additionalProperties: false
+				}
+			}
 		},
 		required: [
 			'action',
@@ -72,7 +86,8 @@ const OPERATIONS_SCHEMA = {
 			'repeat',
 			'remindAt',
 			'list',
-			'category'
+			'category',
+			'shares'
 		],
 		additionalProperties: false
 	}
@@ -222,6 +237,7 @@ Fields:
 - remindAt: YYYY-MM-DDTHH:MM in the speaker's local time, when the speaker asks to be reminded at a time, such as "remind me at 3 pm to call the bank". Also set date to that day. A dated task without a time is reminded in the morning of its date, so leave remindAt null when no time is said. To remove a reminder time, set it to an empty string. Otherwise null.
 - list: for a note, the name of the list it belongs to, such as "Movies to watch" or "Books". Use it when the speaker names a list or adds something that is one of many of a kind, such as a movie, book, restaurant, or gift idea. Put each item in its own note, never several items in one note, so each can be changed or removed alone. Reuse an existing list's exact name when one fits. To take a note out of its list, set it to an empty string. Null for other types.
 - category: for an expense, the ID of the budget category it belongs to, from the list below. Pick the closest fit by what the money was for. Use null when no category fits or there is no list. Null for other types.
+- shares: for an expense the speaker paid and is sharing with others, each other person's share: their name, the amount they owe the speaker, and settled false. Never include the speaker. Keep amount the whole bill; the speaker's own share is what is left. Work the shares out from what is said and from a photo of the bill when there is one: an even split divides the bill, including the speaker, and shares by what each person had split tax, service charge, and tip in proportion. To change shares, give the full new list, keeping settled true for anyone who has paid back. When the speaker says someone paid them back, set that person's settled to true. To remove all shares, use an empty list. Otherwise null.
 ${categoriesInstructions(context.categories)}${listsInstructions(context.lists)}${namesInstructions(context.names)}${screenInstructions(context)}
 Existing records:
 Below are some of the speaker's records, one JSON object per line: open tasks and the latest notes, expenses, and income. This list is partial. When the speaker refers to a record that is not listed, call ${SEARCH_TOOL} to find it. Use only IDs from this list, from the selected records, or from ${SEARCH_TOOL} and ${LIST_TOOL} results. When the speaker talks about a record that already exists, update or complete it instead of creating a duplicate.
@@ -398,6 +414,10 @@ function cleanFields(raw: Record<string, unknown>): Partial<ItemFields> {
 	else if (typeof raw.category === 'string' && /^[0-9a-f]{8}$/.test(raw.category)) {
 		fields.category = raw.category;
 	}
+	if (Array.isArray(raw.shares)) {
+		const shares = cleanShares(raw.shares);
+		if (shares) fields.shares = shares;
+	}
 	if (typeof raw.repeat === 'object' && raw.repeat !== null) {
 		const { every, unit } = raw.repeat as Record<string, unknown>;
 		// Every 0 means the task stops repeating.
@@ -412,6 +432,22 @@ function cleanFields(raw: Record<string, unknown>): Partial<ItemFields> {
 		}
 	}
 	return fields;
+}
+
+const MAX_SHARES = 20;
+
+/** Well-formed shares, or null when any is malformed, so a bad list never replaces a good one. */
+function cleanShares(raw: unknown[]): Share[] | null {
+	if (raw.length > MAX_SHARES) return null;
+	const shares: Share[] = [];
+	for (const item of raw) {
+		if (typeof item !== 'object' || item === null) return null;
+		const { person, amount, settled } = item as Record<string, unknown>;
+		const name = typeof person === 'string' ? person.replace(/\s+/g, ' ').trim().slice(0, 60) : '';
+		if (!name || typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) return null;
+		shares.push({ person: name, amount: Math.round(amount * 100) / 100, settled: settled === true });
+	}
+	return shares;
 }
 
 /** Keeps only well-formed operations, so a malformed model reply can't reach the database. */
@@ -440,7 +476,8 @@ function parseOperations(value: unknown): ProposedOperation[] {
 						repeat: fields.repeat ?? null,
 						remindAt: fields.remindAt ?? null,
 						list: operation.type === 'note' ? (fields.list ?? null) : null,
-						category: operation.type === 'expense' ? (fields.category ?? null) : null
+						category: operation.type === 'expense' ? (fields.category ?? null) : null,
+						shares: operation.type === 'expense' ? (fields.shares ?? []) : []
 					}
 				});
 				break;

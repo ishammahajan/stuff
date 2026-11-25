@@ -3,7 +3,7 @@
 	import { invalidateAll } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { attached } from '#lib/attached.svelte.ts';
-	import { formatMoney, localDate, type MoneyView } from '#lib/items.ts';
+	import { formatMoney, localDate, ownShare, type MoneyView } from '#lib/items.ts';
 	import { recent } from '#lib/recent.svelte.ts';
 	import { Selection } from '#lib/selection.svelte.ts';
 	import SelectionBar from '#lib/SelectionBar.svelte';
@@ -50,7 +50,8 @@
 		for (const record of records) {
 			if (record.type !== 'expense' || !counted(record)) continue;
 			const key = record.category && categoryNames.has(record.category) ? record.category : null;
-			spent.set(key, (spent.get(key) ?? 0) + record.amount!);
+			// Only the user's own share of a shared expense counts.
+			spent.set(key, (spent.get(key) ?? 0) + ownShare(record));
 		}
 		const list = data.budget.categories.map((category) => ({
 			id: category.id as string | null,
@@ -95,13 +96,44 @@
 	let message = $state('');
 	let toast = $state<{ text: string; operationId: string } | null>(null);
 
+	const isShared = (record: MoneyView) => record.type === 'expense' && record.shares.length > 0;
+
+	/** An amount in the record's own currency. */
+	const recordMoney = (record: MoneyView, amount: number) =>
+		record.currency && record.currency !== currency ? `${amount} ${record.currency}` : money(amount);
+
+	/** The amount shown on a record: the user's own share of a shared expense. */
 	function amountText(record: MoneyView): string {
 		if (record.amount === null) return '';
-		const text =
-			record.currency && record.currency !== currency
-				? `${record.amount} ${record.currency}`
-				: money(record.amount);
+		const text = recordMoney(record, isShared(record) ? ownShare(record) : record.amount);
 		return record.type === 'income' ? `+${text}` : text;
+	}
+
+	// Expenses from any month with shares not yet paid back, oldest first.
+	let owed = $derived(
+		data.money
+			.filter((record) => record.type === 'expense' && record.shares.some((share) => !share.settled))
+			.sort((a, b) => dayOf(a).localeCompare(dayOf(b)))
+	);
+	let owedTotal = $derived(
+		owed
+			.filter(counted)
+			.flatMap((record) => record.shares.filter((share) => !share.settled))
+			.reduce((sum, share) => sum + share.amount, 0)
+	);
+
+	async function settle(record: MoneyView, index: number) {
+		const share = record.shares[index];
+		const reply = await post(`/api/money/${record.id}`, {
+			action: 'settle',
+			share: index,
+			person: share.person,
+			localDate: localDate()
+		});
+		if (reply && typeof reply.operationId === 'string') {
+			toast = { text: `Settled: ${share.person}, ${recordMoney(record, share.amount)}`, operationId: reply.operationId };
+		}
+		await invalidateAll();
 	}
 
 	function meta(record: MoneyView): string {
@@ -114,7 +146,11 @@
 				? 'Income'
 				: ((record.category && categoryNames.get(record.category)) ?? 'Uncategorised');
 		const foreign = record.amount !== null && !counted(record) ? 'not counted' : '';
-		return [day, kind, foreign].filter(Boolean).join(' · ');
+		const shared =
+			isShared(record) && record.amount !== null
+				? `your share of ${recordMoney(record, record.amount)}, with ${record.shares.map((share) => share.person).join(', ')}`
+				: '';
+		return [day, kind, shared, foreign].filter(Boolean).join(' · ');
 	}
 
 	async function post(url: string, body?: unknown): Promise<Record<string, unknown> | null> {
@@ -328,6 +364,31 @@
 								{left! < 0 ? `${money(-left!)} over` : `${money(left!)} left`}
 							</span>
 						{/if}
+					</li>
+				{/each}
+			</ul>
+		{/if}
+
+		{#if owed.length > 0}
+			<h2>Owed to you{owedTotal > 0 ? ` · ${money(owedTotal)}` : ''}</h2>
+			<ul class="owed">
+				{#each owed as record (record.id)}
+					<li>
+						<span class="top">
+							<span class="title">{record.title}</span>
+							<span class="meta">{meta(record).split(' · ')[0]}</span>
+						</span>
+						<ul class="shares">
+							{#each record.shares as share, i (i)}
+								{#if !share.settled}
+									<li>
+										<span class="person">{share.person}</span>
+										<span class="amount">{recordMoney(record, share.amount)}</span>
+										<button class="settle" onclick={() => settle(record, i)}>Settle</button>
+									</li>
+								{/if}
+							{/each}
+						</ul>
 					</li>
 				{/each}
 			</ul>
@@ -707,6 +768,41 @@
 	.buttons {
 		display: flex;
 		gap: 0.5rem;
+	}
+
+	.owed > li {
+		display: grid;
+		gap: 0.35rem;
+		padding: 0.6rem 0.75rem;
+		border-radius: 0.875rem;
+		border: 1px solid var(--border);
+		background: var(--surface);
+	}
+
+	.shares {
+		gap: 0.25rem;
+	}
+
+	.shares li {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		font-size: 0.9375rem;
+	}
+
+	.person {
+		flex: 1;
+		min-width: 0;
+		overflow-wrap: anywhere;
+	}
+
+	.settle {
+		flex: none;
+		padding: 0.2rem 0.7rem;
+		border-radius: 999px;
+		border: 1px solid var(--border);
+		font-size: 0.8125rem;
+		color: var(--accent);
 	}
 
 	.toast {
