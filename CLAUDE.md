@@ -334,6 +334,17 @@ tap-first, with voice for corrections.
   `note`, and sets of `{ target, done }`. Weight is in kg: one dumbbell or
   kettlebell, or a barbell's or machine's total. Completing a workout sets
   `completed_at`. Any split is allowed; the model picks what fits.
+- Every workout the model creates gets a `warmup`: warm-up and stretching steps,
+  one per line, written from the summary and the trainer notes (days since the
+  last session, muscles trained in the last two days, injuries, ramp-up sets
+  for the first heavy lift), ending with an "After:" line of static stretches.
+- **Exercise guides** are `records` of type `exercise_guide`, one per exercise:
+  the title is the exercise's name (matched ignoring case) and `details` is how
+  to do it, with a "For you:" line when the trainer notes call for an
+  adjustment. The model writes one whenever a workout it creates or changes has
+  an exercise without one, and updates it when the speaker finds it unclear.
+  The summary lists the guides by ID and names exercises in recent and planned
+  workouts that still lack one.
 - The trainer's memory is `records` of type `trainer_note`: equipment, missing
   machines, injuries, goals without a number, and what it notices. The model
   creates, updates, and deletes them, for example when a machine comes back.
@@ -356,8 +367,9 @@ tap-first, with voice for corrections.
     best score before it was set, the best now, the target's score, and the weeks
     left at the trend of the last 8 weeks. A weight goal scores by Epley at any
     number of reps;
-  - the workouts planned ahead and those missed in the last 2 weeks, and the
-    trainer notes, with IDs.
+  - the workouts planned ahead and those missed in the last 2 weeks, the
+    exercise guides and the exercises without one, and the trainer notes, with
+    IDs.
 
   A workout counts as done once it is finished or any set was logged.
 - **Progression rule** (`nextTarget`): every target reached means more weight
@@ -367,7 +379,8 @@ tap-first, with voice for corrections.
   done. With nothing planned, what was done becomes the baseline. The model takes
   its targets from these suggestions.
 - `src/routes/gym` groups workouts in the browser: Today (open), Missed, Upcoming,
-  and Done (the latest 20). Each set row is prefilled from the target, so the
+  and Done (the latest 20). An open card shows the warm-up above the exercises,
+  and "How to do it" under each exercise that has a guide. Each set row is prefilled from the target, so the
   check logs it as planned in one tap; `+ Set` adds a set. The pencil attaches
   that day to the pill for a voice change, such as swapping an exercise. ×
   deletes, with an Undo. Trainer notes are listed with × (forget, with an Undo).
@@ -544,8 +557,8 @@ statements.
 - To test the production build, run `pnpm build`, then
   `env ORIGIN=http://localhost:3000 PORT=3000 BODY_SIZE_LIMIT=20M node --env-file=.env build`
   (also in `.claude/launch.json`). `stuff-dev` in the same file runs `vite dev`
-  on port 5174 for when port 3000 is taken; create its account with
-  `pnpm invite --origin http://localhost:5174`.
+  on port 5174 for when port 3000 is taken, and `stuff-dev-2` on 5175 for when
+  both are; create its account with `pnpm invite --origin http://localhost:<port>`.
 - To test capture without a microphone, post a WAV file to `/api/capture` with a
   session cookie, the `Origin` header, and `localDate` and `timeZone` form fields.
   In a browser, replace `navigator.mediaDevices.getUserMedia` with an

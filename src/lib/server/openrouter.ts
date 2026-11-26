@@ -119,6 +119,7 @@ const OPERATIONS_SCHEMA = {
 				}
 			},
 			exercises: EXERCISES_SCHEMA,
+			warmup: { type: ['string', 'null'] },
 			goal: {
 				type: ['object', 'null'],
 				properties: { exercise: { type: 'string' }, target: SET_VALUES_SCHEMA },
@@ -143,7 +144,8 @@ const OPERATIONS_SCHEMA = {
 			'goal',
 			'category',
 			'shares',
-			'exercises'
+			'exercises',
+			'warmup'
 		],
 		additionalProperties: false
 	}
@@ -178,7 +180,7 @@ const TOOLS = [
 		function: {
 			name: TRAINING_TOOL,
 			description:
-				"Returns the speaker's training summary: history and adherence, each exercise's last sets, estimated strength, trend, and suggested next target, sets per muscle this week, planned and missed workouts with their IDs, and all trainer notes. Call it before planning workouts or answering anything about training.",
+				"Returns the speaker's training summary: history and adherence, each exercise's last sets, estimated strength, trend, and suggested next target, sets per muscle this week, planned and missed workouts with their IDs, the exercise guides and the exercises without one, and all trainer notes. Call it before planning workouts or answering anything about training.",
 			parameters: { type: 'object', properties: {}, additionalProperties: false }
 		}
 	},
@@ -292,6 +294,7 @@ Record types:
 - workout: one day's training session, planned or done. See Training below.
 - trainer_note: something you, as the speaker's trainer, remember about them. See Training below.
 - goal: a training goal with a number for one exercise, such as a 150 kg bench. See Training below.
+- exercise_guide: how to do one exercise, written once per exercise. See Training below.
 
 Fields:
 - title: a short summary in the speaker's words.
@@ -307,6 +310,7 @@ Fields:
 - category: for an expense, the ID of the budget category it belongs to, from the list below. Pick the closest fit by what the money was for. Use null when no category fits or there is no list. Null for other types.
 - shares: for an expense the speaker paid and is sharing with others, each other person's share: their name, the amount they owe the speaker, and settled false. Never include the speaker. Keep amount the whole bill; the speaker's own share is what is left. Work the shares out from what is said and from a photo of the bill when there is one: an even split divides the bill, including the speaker, and shares by what each person had split tax, service charge, and tip in proportion. To change shares, give the full new list, keeping settled true for anyone who has paid back. When the speaker says someone paid them back, set that person's settled to true. To remove all shares, use an empty list. Otherwise null.
 - exercises: for a workout, its exercises in order. To change any of them, give the full new list, keeping every done value as it is. Null for other types, and null on an update that doesn't change them.
+- warmup: for a workout, its warm-up and stretching, one step per line. See Training below. Null for other types, and null on an update that doesn't change it.
 - goal: for a goal, the exercise's exact name and the target set, for example 150 kg for 1 rep, 20 pull-ups, or a 120 s plank. Null for other types, and null on an update that doesn't change it.
 ${TRAINING}${trainingInstructions(context)}${categoriesInstructions(context.categories)}${listsInstructions(context.lists)}${namesInstructions(context.names)}${screenInstructions(context)}
 Existing records:
@@ -336,7 +340,8 @@ const SCREEN_NAMES: Record<ItemType, string> = {
 	income: 'Budget',
 	workout: 'Gym',
 	trainer_note: 'Gym',
-	goal: 'Gym'
+	goal: 'Gym',
+	exercise_guide: 'Gym'
 };
 
 const TRAINING = `
@@ -347,6 +352,8 @@ You are also the speaker's personal trainer. They ask you to plan workouts ("pla
 - Any split is allowed, including unusual ones such as arms and chest only, when it serves the speaker's goal or request. Judge balance and recovery from the sets per muscle and the days since each muscle was trained.
 - Each exercise has a name, a movement pattern, the muscles it works, a measure (weight_reps for weight and reps, reps for bodyweight reps, time for holds), its sets, and an optional short cue as note. Reuse an existing exercise's exact name, so its history adds up. Planned sets set target and leave done null. Weight is in kg: for dumbbells and kettlebells, the weight of one, even when both hands hold one; for a barbell or a machine, the total.
 - Targets: use the summary's suggested next sets for exercises the speaker has done. For a new exercise, estimate from related exercises in the same pattern, conservatively, and say in note how hard it should feel, for example "stop 2 reps short of failure". Never plan around equipment the trainer notes say is missing.
+- Warm-up: every workout you create gets warmup, written for this speaker on this day, the way a trainer standing next to them would. Base it on the summary and the trainer notes: the day's exercises and heaviest lifts, how many days since the last session (longer after a break), which muscles were trained in the last two days and may be sore, and any injury, pain, or stiffness noted. Give 4 to 8 short steps, one per line, each with its amount, in this order: a few minutes of general warm-up; mobility and dynamic stretches for the joints and muscles the day loads, with extra care for any noted problem area; activation drills when they help, such as band pull-aparts before pressing; ramp-up sets for the first heavy exercise, worked out from its target weight, such as "Bench: bar × 10, 40 kg × 5, 50 kg × 3". End with one line starting "After:" naming two or three static stretches for the muscles worked, held 30 s each. Don't repeat the exercises' sets or the day's advice. When you change a workout's exercises or move it after a long gap, rewrite warmup to match. To remove it, set it to an empty string.
+- Exercise guides: the speaker may not know an exercise you plan, so each exercise has one exercise_guide record that the Gym screen shows under it. Its title is the exercise's exact name, and details is how to do it, one short line each: the setup (equipment, grip, stance, position), the movement in two to four steps, breathing, and the two most common mistakes to avoid. Add a line starting "For you:" when the trainer notes call for an adjustment, such as a shoulder that hurts or a missing bench. Write plain words that a beginner can follow, under 120 words. Whenever you create or change a workout, create a guide for each of its exercises that the summary doesn't list under "Exercise guides you wrote", and also for any listed under "Exercises without a guide yet". Write a guide once: never create a second one for the same exercise. Update a guide when the speaker says it is unclear, asks how to do the exercise, or when a new trainer note changes how they should do it; then also answer briefly in answer. If you rename an exercise, update its guide's title too.
 - Logging: when the speaker says what they did, such as "bench 60 for 8, 8, and 7", set done on the matching sets of that day's workout, adding sets with target null when they did more. When there is no workout for that day, create one with done set. Never mark a workout done unless the speaker says they finished.
 - Changes: to swap an exercise, update the workout with the full new exercises list, using an exercise of the same pattern and muscles that the available equipment allows. To move a day, update its date.
 - Trainer notes: create a trainer_note when the speaker asks you to remember something, or states a lasting fact: equipment at home or missing at the gym, an injury or pain, a goal, a schedule, or a preference. Also note your own observations worth keeping for next time, such as a stalled lift or a plan for the coming weeks. Title is the note in one sentence, with its date when that matters; details only when needed. When a fact changes, update or delete its note, for example delete "the gym has no hack squat" when the speaker says it is back. Keep notes few and current: merge related ones.
@@ -357,7 +364,7 @@ You are also the speaker's personal trainer. They ask you to plan workouts ("pla
 /** The training summary in the prompt, when the speaker recorded on the Gym screen. */
 function trainingInstructions(context: FilingContext): string {
 	if (context.screen !== 'workout' && context.screen !== 'trainer_note' && context.screen !== 'goal') return '';
-	return `\n${context.training()}\nThe training summary above already holds every workout ahead, the recent history, all goals, and all trainer notes, so don't look those up again or call ${TRAINING_TOOL}. Search only for older workouts.\n`;
+	return `\n${context.training()}\nThe training summary above already holds every workout ahead, the recent history, all goals, the exercise guides, and all trainer notes, so don't look those up again or call ${TRAINING_TOOL}. Search only for older workouts.\n`;
 }
 
 /** The speaker's budget categories, so expenses can be filed under one. */
@@ -514,6 +521,9 @@ function cleanFields(raw: Record<string, unknown>): Partial<ItemFields> {
 		const shares = cleanShares(raw.shares);
 		if (shares) fields.shares = shares;
 	}
+	// An empty string removes the warm-up.
+	if (raw.warmup === '') fields.warmup = null;
+	else if (typeof raw.warmup === 'string' && raw.warmup.trim()) fields.warmup = raw.warmup.trim().slice(0, MAX_WARMUP);
 	if (Array.isArray(raw.exercises)) {
 		const exercises = cleanExercises(raw.exercises);
 		if (exercises) fields.exercises = exercises;
@@ -565,6 +575,7 @@ function cleanShares(raw: unknown[]): Share[] | null {
 }
 
 const MAX_EXERCISES = 20;
+const MAX_WARMUP = 1500;
 const MAX_SETS = 15;
 
 /** A number in range, or null for anything else. */
@@ -644,6 +655,7 @@ function parseOperations(value: unknown): ProposedOperation[] {
 						category: operation.type === 'expense' ? (fields.category ?? null) : null,
 						shares: operation.type === 'expense' ? (fields.shares ?? []) : [],
 						exercises: operation.type === 'workout' ? (fields.exercises ?? []) : [],
+						warmup: operation.type === 'workout' ? (fields.warmup ?? null) : null,
 						goal: operation.type === 'goal' ? (fields.goal ?? null) : null
 					}
 				});

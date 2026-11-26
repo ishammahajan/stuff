@@ -26,7 +26,7 @@
 		delete: 'Deleted'
 	};
 
-	const LABELS: Partial<Record<ItemType, string>> = { trainer_note: 'trainer' };
+	const LABELS: Partial<Record<ItemType, string>> = { trainer_note: 'trainer', exercise_guide: 'how-to' };
 
 	function exercises(item: Item): string {
 		const count = item.exercises.length;
@@ -130,6 +130,7 @@
 	.type.workout,
 	.type.trainer_note,
 	.type.goal,
+	.type.exercise_guide,
 	.type.task {
 		color: var(--accent);
 	}

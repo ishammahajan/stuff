@@ -127,7 +127,7 @@ export async function loadRecords(account: Account): Promise<StoredRecord[]> {
 }
 
 /** How many records of each type the model sees up front. */
-// Trainer notes and goals go in the training summary instead, with all of them.
+// Trainer notes, goals, and exercise guides go in the training summary instead.
 const SNAPSHOT_LIMITS: Record<ItemType, number> = {
 	task: 50,
 	note: 20,
@@ -135,7 +135,8 @@ const SNAPSHOT_LIMITS: Record<ItemType, number> = {
 	income: 10,
 	workout: 8,
 	trainer_note: 0,
-	goal: 0
+	goal: 0,
+	exercise_guide: 0
 };
 
 /** Drops a set's null values, to keep the model's view short. */
@@ -174,7 +175,8 @@ export function summary(record: StoredRecord, detailsLimit?: number) {
 		list,
 		category,
 		shares,
-		exercises
+		exercises,
+		warmup
 	} = record.fields;
 	return {
 		id: record.id,
@@ -192,6 +194,7 @@ export function summary(record: StoredRecord, detailsLimit?: number) {
 		...(category ? { category } : {}),
 		...(shares.length ? { shares } : {}),
 		...(exercises.length ? { exercises: compactExercises(exercises) } : {}),
+		...(warmup ? { warmup: detailsLimit ? warmup.slice(0, detailsLimit) : warmup } : {}),
 		...(record.completedAt ? { completed: true } : {})
 	};
 }

@@ -79,6 +79,10 @@
 		};
 	});
 
+	// Each exercise's guide, by its name in lower case.
+	let guides = $derived(new Map(data.guides.map((g) => [g.name.trim().toLowerCase(), g.guide])));
+	const guideFor = (name: string) => guides.get(name.trim().toLowerCase()) ?? null;
+
 	const label = (value: string) => value.replace(/_/g, ' ');
 
 	function when(workout: WorkoutView): string {
@@ -206,7 +210,13 @@
 				<h2>{title}</h2>
 				<div class="list">
 					{#each workouts as workout (workout.id)}
-						<WorkoutCard {workout} when={when(workout)} {open} act={(body) => act(workout, body)} />
+						<WorkoutCard
+							{workout}
+							when={when(workout)}
+							{open}
+							{guideFor}
+							act={(body) => act(workout, body)}
+						/>
 					{/each}
 				</div>
 			</section>

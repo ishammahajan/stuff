@@ -1,7 +1,7 @@
 // The training summary the trainer model reads before it plans or advises: history,
 // strength per exercise, a suggested next target from a fixed progression rule,
 // recent work per muscle, goals and their progress, upcoming and missed workouts,
-// and the trainer's notes. Also the progress the Gym screen charts, and which goals
+// the exercise guides and the exercises lacking one, and the trainer's notes. Also the progress the Gym screen charts, and which goals
 // were reached.
 // Pure code with no database or SvelteKit imports, so it can be tested on its own.
 import {
@@ -39,6 +39,8 @@ interface Performance {
 const RECENT_SESSIONS = 6;
 const MAX_EXERCISES = 40;
 const TREND_WEEKS = 8;
+// Exercises without a guide that the summary names, so a backlog doesn't bloat it.
+const MAX_UNGUIDED = 12;
 // Epley's estimate is unreliable for long sets.
 const MAX_REPS_FOR_ESTIMATE = 12;
 
@@ -462,6 +464,25 @@ export function summarizeTraining(all: TrainingRecord[], today: string): string 
 		`  ${JSON.stringify({ id: record.id, date, title: record.fields.title, exercises: record.fields.exercises.map((e) => e.name) })}`;
 	lines.push('', 'Planned workouts ahead:', ...(ahead.length ? ahead.map(describe) : ['  (none)']));
 	if (missed.length) lines.push('', 'Missed in the last 2 weeks (not done):', ...missed.map(describe));
+
+	// Exercise guides, by ID, and the exercises in recent and planned workouts that
+	// still lack one.
+	const guides = all.filter((record) => record.type === 'exercise_guide');
+	const guided = new Set(guides.map((record) => nameKey(record.fields.title)));
+	const unguided = new Map<string, string>();
+	for (const { record } of [...sessions.slice(-RECENT_SESSIONS), ...ahead]) {
+		for (const { name } of record.fields.exercises) {
+			if (!guided.has(nameKey(name))) unguided.set(nameKey(name), name);
+		}
+	}
+	lines.push('', 'Exercise guides you wrote, by exercise:');
+	if (guides.length === 0) lines.push('  (none yet)');
+	for (const guide of guides.sort((a, b) => a.fields.title.localeCompare(b.fields.title))) {
+		lines.push(`  ${JSON.stringify({ id: guide.id, exercise: guide.fields.title })}`);
+	}
+	if (unguided.size > 0) {
+		lines.push('', `Exercises without a guide yet: ${[...unguided.values()].slice(0, MAX_UNGUIDED).join(', ')}`);
+	}
 
 	lines.push('', 'Trainer notes, oldest first:');
 	if (notes.length === 0) lines.push('  (none yet)');

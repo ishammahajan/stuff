@@ -7,7 +7,8 @@ export const ITEM_TYPES = [
 	'income',
 	'workout',
 	'trainer_note',
-	'goal'
+	'goal',
+	'exercise_guide'
 ] as const;
 export type ItemType = (typeof ITEM_TYPES)[number];
 
@@ -53,6 +54,11 @@ export interface ItemFields {
 	shares: Share[];
 	/** A workout's exercises, in order, with planned and done sets. */
 	exercises: Exercise[];
+	/**
+	 * A workout's warm-up and stretching, one step per line, written for the
+	 * speaker's condition on that day.
+	 */
+	warmup: string | null;
 	/** A goal's exercise and the set that reaches it. */
 	goal: Goal | null;
 }
@@ -177,6 +183,7 @@ export function withDefaults(fields: Partial<ItemFields> & { title: string }): I
 		category: null,
 		shares: [],
 		exercises: [],
+		warmup: null,
 		goal: null,
 		...fields
 	};
@@ -242,6 +249,16 @@ export interface GoalView {
 	unit: string;
 	/** Weeks to reach it at the recent pace, or null without a rising trend. */
 	weeksLeft: number | null;
+}
+
+/**
+ * How to do one exercise, written once by the trainer. Its record's title is the
+ * exercise's name and its details are the steps.
+ */
+export interface ExerciseGuideView {
+	id: string;
+	name: string;
+	guide: string;
 }
 
 /** Something the trainer remembers, as the Gym screen shows it. */

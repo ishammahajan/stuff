@@ -9,11 +9,13 @@
 		when: string;
 		/** Shown open, with the sets ready to log. */
 		open?: boolean;
+		/** The trainer's guide to an exercise, by its name, or null when it has none yet. */
+		guideFor: (name: string) => string | null;
 		/** Posts a change to the workout and reloads. Resolves once done. */
 		act: (body: Record<string, unknown>) => Promise<void>;
 	}
 
-	let { workout, when, open = false, act }: Props = $props();
+	let { workout, when, open = false, guideFor, act }: Props = $props();
 
 	// Extra sets added on this screen but not logged yet, per exercise.
 	let extra = $state<Record<number, number>>({});
@@ -64,8 +66,16 @@
 		<p class="advice">{workout.details}</p>
 	{/if}
 
+	{#if workout.warmup}
+		<section class="warmup">
+			<h3>Warm-up</h3>
+			<p class="steps">{workout.warmup}</p>
+		</section>
+	{/if}
+
 	<ol class="exercises">
 		{#each workout.exercises as exercise, e (e + exercise.name)}
+			{@const guide = guideFor(exercise.name)}
 			<li>
 				<div class="name">
 					<span>{exercise.name}</span>
@@ -73,6 +83,12 @@
 						<span class="cue">{exercise.note}</span>
 					{/if}
 				</div>
+				{#if guide}
+					<details class="howto">
+						<summary>How to do it</summary>
+						<p class="steps">{guide}</p>
+					</details>
+				{/if}
 				{#each exercise.sets as set, s (s)}
 					<SetRow number={s + 1} {set} measure={exercise.measure} onlog={(done) => log(e, s, done)} />
 				{/each}
@@ -221,6 +237,52 @@
 
 	.cue {
 		font-weight: 400;
+	}
+
+	/* The trainer writes one step per line. */
+	.steps {
+		margin: 0;
+		white-space: pre-line;
+		font-size: 0.875rem;
+		line-height: 1.45;
+		overflow-wrap: anywhere;
+	}
+
+	.warmup {
+		margin: 0 0 0.75rem;
+		padding: 0.5rem 0.75rem;
+		border-radius: 0.625rem;
+		background: color-mix(in srgb, var(--accent) 8%, transparent);
+	}
+
+	.warmup h3 {
+		margin: 0 0 0.25rem;
+		font-size: 0.75rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--accent);
+	}
+
+	.howto {
+		margin: 0 0 0.25rem;
+	}
+
+	.howto summary {
+		display: inline-block;
+		padding: 0.15rem 0;
+		font-size: 0.8125rem;
+		color: var(--accent);
+	}
+
+	.howto[open] summary {
+		margin-bottom: 0.15rem;
+	}
+
+	.howto .steps {
+		padding: 0.4rem 0.6rem;
+		border-left: 2px solid var(--border);
+		color: var(--muted);
 	}
 
 	.add {
