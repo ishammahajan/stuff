@@ -20,6 +20,7 @@ import type { Account } from './auth.ts';
 import { decryptJson, encryptJson } from './crypto.ts';
 import { db } from './db/index.ts';
 import { operations, records } from './db/schema.ts';
+import { reachedGoals } from './training.ts';
 
 /** A change the model asked for, already checked for shape but not against the records. */
 export type ProposedOperation =
@@ -126,14 +127,15 @@ export async function loadRecords(account: Account): Promise<StoredRecord[]> {
 }
 
 /** How many records of each type the model sees up front. */
-// Trainer notes go in the training summary instead, with all of them.
+// Trainer notes and goals go in the training summary instead, with all of them.
 const SNAPSHOT_LIMITS: Record<ItemType, number> = {
 	task: 50,
 	note: 20,
 	expense: 20,
 	income: 10,
 	workout: 8,
-	trainer_note: 0
+	trainer_note: 0,
+	goal: 0
 };
 
 /** Drops a set's null values, to keep the model's view short. */
@@ -322,7 +324,7 @@ export async function applyOperations(
 			const [row] = await tx.select().from(records).where(ownedRecord(account, id)).limit(1);
 			if (!row) continue;
 			before = toState(decryptRecord(account, row));
-			const completable = before.type === 'task' || before.type === 'workout';
+			const completable = before.type === 'task' || before.type === 'workout' || before.type === 'goal';
 			if (operation.action === 'complete' && (!completable || before.completedAt)) continue;
 			if (operation.action === 'reopen' && (!completable || !before.completedAt)) continue;
 		}
@@ -526,8 +528,40 @@ export async function logSet(
 			exercises: exercises.map((e, i) => (i === exerciseIndex ? { ...e, sets } : e))
 		};
 		const [operationId] = await applyOperations(tx, account, null, [{ action: 'update', id, changes }], today);
+		if (operationId) await completeReachedGoals(tx, account, null, today);
 		return operationId ?? null;
 	});
+}
+
+/**
+ * Completes every open goal that a logged set has reached, each as a logged
+ * operation under `captureId`. Runs inside the transaction that logged the sets.
+ */
+export async function completeReachedGoals(
+	tx: Transaction,
+	account: Account,
+	captureId: string | null,
+	today: string
+): Promise<string[]> {
+	const [open] = await tx
+		.select({ id: records.id })
+		.from(records)
+		.where(and(eq(records.userId, account.id), eq(records.type, 'goal'), isNull(records.completedAt)))
+		.limit(1);
+	if (!open) return [];
+	const rows = await tx
+		.select()
+		.from(records)
+		.where(and(eq(records.userId, account.id), inArray(records.type, ['goal', 'workout'])));
+	const reached = reachedGoals(rows.map((row) => decryptRecord(account, row)));
+	if (reached.length === 0) return [];
+	return applyOperations(
+		tx,
+		account,
+		captureId,
+		reached.map(({ id }) => ({ action: 'complete', id })),
+		today
+	);
 }
 
 /**

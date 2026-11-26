@@ -7,6 +7,7 @@ import {
 	OPERATION_KINDS,
 	REPEAT_UNITS,
 	type Exercise,
+	type Goal,
 	type ItemFields,
 	type Measure,
 	type MovementPattern,
@@ -117,7 +118,13 @@ const OPERATIONS_SCHEMA = {
 					additionalProperties: false
 				}
 			},
-			exercises: EXERCISES_SCHEMA
+			exercises: EXERCISES_SCHEMA,
+			goal: {
+				type: ['object', 'null'],
+				properties: { exercise: { type: 'string' }, target: SET_VALUES_SCHEMA },
+				required: ['exercise', 'target'],
+				additionalProperties: false
+			}
 		},
 		required: [
 			'action',
@@ -133,6 +140,7 @@ const OPERATIONS_SCHEMA = {
 			'repeat',
 			'remindAt',
 			'list',
+			'goal',
 			'category',
 			'shares',
 			'exercises'
@@ -283,6 +291,7 @@ Record types:
 - note: anything else worth keeping, such as an idea, a fact learned, or a recommendation.
 - workout: one day's training session, planned or done. See Training below.
 - trainer_note: something you, as the speaker's trainer, remember about them. See Training below.
+- goal: a training goal with a number for one exercise, such as a 150 kg bench. See Training below.
 
 Fields:
 - title: a short summary in the speaker's words.
@@ -298,6 +307,7 @@ Fields:
 - category: for an expense, the ID of the budget category it belongs to, from the list below. Pick the closest fit by what the money was for. Use null when no category fits or there is no list. Null for other types.
 - shares: for an expense the speaker paid and is sharing with others, each other person's share: their name, the amount they owe the speaker, and settled false. Never include the speaker. Keep amount the whole bill; the speaker's own share is what is left. Work the shares out from what is said and from a photo of the bill when there is one: an even split divides the bill, including the speaker, and shares by what each person had split tax, service charge, and tip in proportion. To change shares, give the full new list, keeping settled true for anyone who has paid back. When the speaker says someone paid them back, set that person's settled to true. To remove all shares, use an empty list. Otherwise null.
 - exercises: for a workout, its exercises in order. To change any of them, give the full new list, keeping every done value as it is. Null for other types, and null on an update that doesn't change them.
+- goal: for a goal, the exercise's exact name and the target set, for example 150 kg for 1 rep, 20 pull-ups, or a 120 s plank. Null for other types, and null on an update that doesn't change it.
 ${TRAINING}${trainingInstructions(context)}${categoriesInstructions(context.categories)}${listsInstructions(context.lists)}${namesInstructions(context.names)}${screenInstructions(context)}
 Existing records:
 Below are some of the speaker's records, one JSON object per line: open tasks and the latest notes, expenses, income, and workouts. This list is partial. When the speaker refers to a record that is not listed, call ${SEARCH_TOOL} to find it. Use only IDs from this list, from the selected records, from the training summary, or from ${SEARCH_TOOL} and ${LIST_TOOL} results. When the speaker talks about a record that already exists, update or complete it instead of creating a duplicate.
@@ -325,7 +335,8 @@ const SCREEN_NAMES: Record<ItemType, string> = {
 	expense: 'Budget',
 	income: 'Budget',
 	workout: 'Gym',
-	trainer_note: 'Gym'
+	trainer_note: 'Gym',
+	goal: 'Gym'
 };
 
 const TRAINING = `
@@ -339,14 +350,14 @@ You are also the speaker's personal trainer. They ask you to plan workouts ("pla
 - Logging: when the speaker says what they did, such as "bench 60 for 8, 8, and 7", set done on the matching sets of that day's workout, adding sets with target null when they did more. When there is no workout for that day, create one with done set. Never mark a workout done unless the speaker says they finished.
 - Changes: to swap an exercise, update the workout with the full new exercises list, using an exercise of the same pattern and muscles that the available equipment allows. To move a day, update its date.
 - Trainer notes: create a trainer_note when the speaker asks you to remember something, or states a lasting fact: equipment at home or missing at the gym, an injury or pain, a goal, a schedule, or a preference. Also note your own observations worth keeping for next time, such as a stalled lift or a plan for the coming weeks. Title is the note in one sentence, with its date when that matters; details only when needed. When a fact changes, update or delete its note, for example delete "the gym has no hack squat" when the speaker says it is back. Keep notes few and current: merge related ones.
-- Goals are trainer notes. For a specific goal, such as a 150 kg bench, judge it against the summary's trend, remembering that progress slows as strength grows. Give an honest time range, and suggest a nearer goal when that would serve the speaker better.
+- Goals: when the speaker sets a goal with a number for one exercise, such as "bench 150" or "20 pull-ups", create a goal record: title such as "Bench 150 kg", the goal field, and date as the deadline only if they give one. A goal without a number, such as "get fitter", is a trainer note. Judge every goal against the summary's progress and pace, remembering that progress slows as strength grows: give an honest time range in answer, and suggest a nearer goal when that would serve the speaker better. A goal is completed by itself when a logged set reaches it; never complete one yourself. Plan toward the open goals.
 - Advice goes in answer: brief, specific to the speaker's history, with the reasoning in a sentence. You may search the web for exercise technique or research when it helps.
 `;
 
 /** The training summary in the prompt, when the speaker recorded on the Gym screen. */
 function trainingInstructions(context: FilingContext): string {
-	if (context.screen !== 'workout' && context.screen !== 'trainer_note') return '';
-	return `\n${context.training()}\nThe training summary above already holds every workout ahead, the recent history, and all trainer notes, so don't look those up again or call ${TRAINING_TOOL}. Search only for older workouts.\n`;
+	if (context.screen !== 'workout' && context.screen !== 'trainer_note' && context.screen !== 'goal') return '';
+	return `\n${context.training()}\nThe training summary above already holds every workout ahead, the recent history, all goals, and all trainer notes, so don't look those up again or call ${TRAINING_TOOL}. Search only for older workouts.\n`;
 }
 
 /** The speaker's budget categories, so expenses can be filed under one. */
@@ -520,7 +531,21 @@ function cleanFields(raw: Record<string, unknown>): Partial<ItemFields> {
 			fields.repeat = { every: every as number, unit: unit as RepeatUnit };
 		}
 	}
+	if (typeof raw.goal === 'object' && raw.goal !== null) {
+		const goal = cleanGoal(raw.goal as Record<string, unknown>);
+		if (goal) fields.goal = goal;
+	}
 	return fields;
+}
+
+/** A goal with a named exercise and a target, or null. */
+function cleanGoal(raw: Record<string, unknown>): Goal | null {
+	const exercise = typeof raw.exercise === 'string' ? raw.exercise.replace(/\s+/g, ' ').trim().slice(0, 60) : '';
+	const target = cleanSetValues(raw.target);
+	if (!exercise || !target) return null;
+	// A weight goal without reps means one rep, such as a 150 kg bench.
+	if (target.weight !== null && target.reps === null) target.reps = 1;
+	return { exercise, target };
 }
 
 const MAX_SHARES = 20;
@@ -601,6 +626,7 @@ function parseOperations(value: unknown): ProposedOperation[] {
 		switch (operation.action) {
 			case 'create':
 				if (!isItemType(operation.type) || !fields.title) break;
+				if (operation.type === 'goal' && !fields.goal) break;
 				parsed.push({
 					action: 'create',
 					type: operation.type,
@@ -617,7 +643,8 @@ function parseOperations(value: unknown): ProposedOperation[] {
 						list: operation.type === 'note' ? (fields.list ?? null) : null,
 						category: operation.type === 'expense' ? (fields.category ?? null) : null,
 						shares: operation.type === 'expense' ? (fields.shares ?? []) : [],
-						exercises: operation.type === 'workout' ? (fields.exercises ?? []) : []
+						exercises: operation.type === 'workout' ? (fields.exercises ?? []) : [],
+						goal: operation.type === 'goal' ? (fields.goal ?? null) : null
 					}
 				});
 				break;

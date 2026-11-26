@@ -16,6 +16,7 @@ import { captures, operations } from './db/schema.ts';
 import { interpretMemo, type ProposedQuestion, type ReplyContext } from './openrouter.ts';
 import {
 	applyOperations,
+	completeReachedGoals,
 	describeRecords,
 	listNames,
 	listOperations,
@@ -209,6 +210,7 @@ async function finishCapture(
 				.returning({ id: captures.id });
 			if (updated.length === 0) throw new AlreadyDone();
 			await applyOperations(tx, account, id, proposed, body.localDate);
+			if (proposed.length > 0) await completeReachedGoals(tx, account, id, body.localDate);
 			if (document) await storePassages(tx, account, document.recordId, document.passages);
 			if (answers) await closeQuestion(tx, account, answers, 'Answered by voice');
 		});
@@ -278,7 +280,10 @@ export async function answerQuestion(
 		const closed = await closeQuestion(tx, account, id, chosen ? chosen.label : 'Dismissed');
 		if (!closed) return 'This question is no longer open.';
 		// The operations are checked again against the account's records as they are now.
-		if (chosen) await applyOperations(tx, account, id, chosen.operations, today);
+		if (chosen) {
+			await applyOperations(tx, account, id, chosen.operations, today);
+			await completeReachedGoals(tx, account, id, today);
+		}
 		return null;
 	});
 	if (!problem && option !== null) await refreshFeedQuietly(account);

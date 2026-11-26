@@ -335,8 +335,16 @@ tap-first, with voice for corrections.
   kettlebell, or a barbell's or machine's total. Completing a workout sets
   `completed_at`. Any split is allowed; the model picks what fits.
 - The trainer's memory is `records` of type `trainer_note`: equipment, missing
-  machines, injuries, goals, and what it notices. The model creates, updates, and
-  deletes them, for example when a machine comes back. Goals are notes for now.
+  machines, injuries, goals without a number, and what it notices. The model
+  creates, updates, and deletes them, for example when a machine comes back.
+- **Goals** with a number are `records` of type `goal`: `goal` holds the exercise's
+  name and the target set (such as 150 kg × 1, 20 reps, or 120 s; a weight without
+  reps means one rep), `date` is the optional deadline, and `completed_at` marks
+  it reached. The model never completes a goal: `completeReachedGoals` in
+  `records.ts` does, as a logged operation, whenever a done set of that exercise
+  (matched by name, ignoring case, on any workout) reaches the target. It runs
+  after a tap logs a set, after a capture is filed, and after a question is
+  answered.
 - **The numbers are computed, not guessed.** `src/lib/server/training.ts`
   (`summarizeTraining`, pure, no database) builds the summary the model reads:
   - history and adherence over the last 4 weeks, and the latest 6 sessions;
@@ -344,6 +352,10 @@ tap-first, with voice for corrections.
   - per exercise, grouped by pattern: the last sets, the estimated max (Epley,
     up to 12 reps) or best, the all-time best, a weekly trend over 8 weeks, and a
     suggested next target (`nextTarget`);
+  - each open goal and those reached in the last 30 days (`goalProgress`): the
+    best score before it was set, the best now, the target's score, and the weeks
+    left at the trend of the last 8 weeks. A weight goal scores by Epley at any
+    number of reps;
   - the workouts planned ahead and those missed in the last 2 weeks, and the
     trainer notes, with IDs.
 
@@ -359,10 +371,15 @@ tap-first, with voice for corrections.
   check logs it as planned in one tap; `+ Set` adds a set. The pencil attaches
   that day to the pill for a voice change, such as swapping an exercise. ×
   deletes, with an Undo. Trainer notes are listed with × (forget, with an Undo).
+- Below Today, Goals lists open goals with a progress bar from the starting score
+  to the target, then reached goals; one reached in the last 24 hours is
+  highlighted. × deletes, with an Undo. Progress (`exerciseProgress`, computed on
+  the server) charts each exercise's best score per session, starting on one with
+  an open goal; sets per muscle over the last 7 days are counted in the browser.
 - `POST /api/workouts/{id}` takes `log` (`logSet` in `records.ts`, checked
   against the exercise name; a set index one past the end adds a set),
-  `complete`, `reopen`, and `delete`. `POST /api/trainer-notes/{id}` deletes a
-  note. Each is logged as an operation.
+  `complete`, `reopen`, and `delete`. `POST /api/trainer-notes/{id}` and
+  `POST /api/goals/{id}` delete a note or a goal. Each is logged as an operation.
 
 ### Reminders
 
@@ -476,13 +493,6 @@ Remove each point from this section as it lands, and describe the result in **Ma
 - **Model provider:** stay on OpenRouter. Calling Google directly, so that only
   Google receives the audio, was considered and rejected on 2026-11-18.
 - **URLs in Knowledge:** saving an article from a link was put off.
-
-### Gym, remaining parts
-
-- **Progress charts** per exercise and per muscle on the Gym screen.
-- **Tracked goals:** a goal as structured data (exercise, target, deadline), with
-  the progress toward it, instead of a trainer note.
-- **Reaching a goal:** mark the moment a goal is met.
 
 ### Budget, remaining parts
 

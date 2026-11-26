@@ -2,8 +2,18 @@
 	import { invalidateAll } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { attached } from '#lib/attached.svelte.ts';
-	import { addDays, anyDone, localDate, type TrainerNoteView, type WorkoutView } from '#lib/items.ts';
+	import {
+		addDays,
+		anyDone,
+		localDate,
+		MUSCLES,
+		type GoalView,
+		type TrainerNoteView,
+		type WorkoutView
+	} from '#lib/items.ts';
 	import { recent } from '#lib/recent.svelte.ts';
+	import GoalCard from './GoalCard.svelte';
+	import ProgressChart from './ProgressChart.svelte';
 	import WorkoutCard from './WorkoutCard.svelte';
 	import type { PageProps } from './$types';
 
@@ -34,6 +44,42 @@
 				.slice(0, HISTORY_LIMIT)
 		};
 	});
+
+	// Open goals, then those reached, newest first. A goal reached in the last day is
+	// highlighted.
+	const DAY = 86_400_000;
+	let goals = $derived({
+		open: data.goals.filter((g) => !g.completedAt),
+		reached: data.goals
+			.filter((g) => g.completedAt)
+			.sort((a, b) => b.completedAt!.localeCompare(a.completedAt!))
+	});
+	const fresh = (goal: GoalView) => !!goal.completedAt && Date.now() - Date.parse(goal.completedAt) < DAY;
+
+	// Done sets per muscle in the last 7 days, most first.
+	let muscles = $derived.by(() => {
+		const today = localDate();
+		const from = addDays(today, -6);
+		const sets = new Map<string, number>();
+		for (const workout of data.workouts) {
+			const date = dateOf(workout);
+			if (date < from || date > today) continue;
+			for (const exercise of workout.exercises) {
+				const count = exercise.sets.filter((set) => set.done).length;
+				for (const muscle of exercise.muscles) sets.set(muscle, (sets.get(muscle) ?? 0) + count);
+			}
+		}
+		const trained = MUSCLES.filter((m) => (sets.get(m) ?? 0) > 0)
+			.map((muscle) => ({ muscle, sets: sets.get(muscle)! }))
+			.sort((a, b) => b.sets - a.sets);
+		return {
+			trained,
+			most: Math.max(1, ...trained.map((m) => m.sets)),
+			untrained: MUSCLES.filter((m) => !sets.get(m))
+		};
+	});
+
+	const label = (value: string) => value.replace(/_/g, ' ');
 
 	function when(workout: WorkoutView): string {
 		const date = dateOf(workout);
@@ -84,6 +130,14 @@
 		});
 		if (reply && typeof reply.operationId === 'string') {
 			toast = { text: `Forgot: ${note.title}`, operationId: reply.operationId };
+		}
+		await invalidateAll();
+	}
+
+	async function dropGoal(goal: GoalView) {
+		const reply = await post(`/api/goals/${goal.id}`, { action: 'delete', localDate: localDate() });
+		if (reply && typeof reply.operationId === 'string') {
+			toast = { text: `Deleted goal: ${goal.title}`, operationId: reply.operationId };
 		}
 		await invalidateAll();
 	}
@@ -160,9 +214,53 @@
 	{/snippet}
 
 	{@render group('Today', groups.today, true)}
+
+	{#if data.goals.length > 0}
+		<section>
+			<h2>Goals</h2>
+			<ul class="goals">
+				{#each [...goals.open, ...goals.reached] as goal (goal.id)}
+					<GoalCard {goal} fresh={fresh(goal)} ondelete={() => dropGoal(goal)} />
+				{/each}
+			</ul>
+		</section>
+	{/if}
+
 	{@render group('Missed', groups.missed, false)}
 	{@render group('Upcoming', groups.upcoming, false)}
 	{@render group('Done', groups.history, false)}
+
+	{#if data.progress.length > 0}
+		<section>
+			<h2>Progress</h2>
+			<ProgressChart
+				series={data.progress}
+				initial={data.progress.find((s) =>
+					goals.open.some((g) => g.goal.exercise.toLowerCase() === s.name.toLowerCase())
+				)?.name}
+			/>
+		</section>
+
+		<section>
+			<h2>Sets per muscle, last 7 days</h2>
+			{#if muscles.trained.length === 0}
+				<p class="muted">No sets logged this week.</p>
+			{:else}
+				<ul class="muscles">
+					{#each muscles.trained as { muscle, sets } (muscle)}
+						<li>
+							<span class="muscle">{label(muscle)}</span>
+							<span class="track"><span style:width={`${(sets / muscles.most) * 100}%`}></span></span>
+							<span class="count">{sets}</span>
+						</li>
+					{/each}
+				</ul>
+				{#if muscles.untrained.length > 0}
+					<p class="muted small">Not trained: {muscles.untrained.map(label).join(', ')}.</p>
+				{/if}
+			{/if}
+		</section>
+	{/if}
 
 	<section>
 		<h2>Trainer notes</h2>
@@ -216,15 +314,57 @@
 	}
 
 	.list,
-	.notes {
+	.notes,
+	.goals {
 		display: grid;
 		gap: 0.5rem;
 	}
 
-	.notes {
+	.notes,
+	.goals,
+	.muscles {
 		list-style: none;
 		margin: 0;
 		padding: 0;
+	}
+
+	.muscles {
+		display: grid;
+		gap: 0.35rem;
+		padding: 0.6rem 0.75rem;
+		border-radius: 0.875rem;
+		border: 1px solid var(--border);
+		background: var(--surface);
+	}
+
+	.muscles li {
+		display: grid;
+		grid-template-columns: 6.5rem 1fr 2rem;
+		align-items: center;
+		gap: 0.5rem;
+		font-size: 0.875rem;
+	}
+
+	.muscle {
+		text-transform: capitalize;
+		overflow-wrap: anywhere;
+	}
+
+	.track span {
+		display: block;
+		height: 0.625rem;
+		border-radius: 0 4px 4px 0;
+		background: var(--accent);
+	}
+
+	.count {
+		text-align: right;
+		font-variant-numeric: tabular-nums;
+	}
+
+	.small {
+		margin-top: 0.5rem;
+		font-size: 0.8125rem;
 	}
 
 	.notes li {

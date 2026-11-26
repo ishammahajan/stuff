@@ -1,6 +1,14 @@
 // The things a voice capture can turn into. Shared by the server and the pages.
 
-export const ITEM_TYPES = ['task', 'note', 'expense', 'income', 'workout', 'trainer_note'] as const;
+export const ITEM_TYPES = [
+	'task',
+	'note',
+	'expense',
+	'income',
+	'workout',
+	'trainer_note',
+	'goal'
+] as const;
 export type ItemType = (typeof ITEM_TYPES)[number];
 
 export const REPEAT_UNITS = ['day', 'week', 'month', 'year'] as const;
@@ -45,6 +53,8 @@ export interface ItemFields {
 	shares: Share[];
 	/** A workout's exercises, in order, with planned and done sets. */
 	exercises: Exercise[];
+	/** A goal's exercise and the set that reaches it. */
+	goal: Goal | null;
 }
 
 /** How an exercise moves, so the trainer can swap like for like and judge balance. */
@@ -106,6 +116,24 @@ export interface Exercise {
 	note: string | null;
 }
 
+/**
+ * A measurable training goal: one set of an exercise that reaches the target, such
+ * as 150 kg × 1 on the bench, 20 pull-ups, or a 120 s plank. `date` on the record
+ * is the deadline, if any, and completing the record marks it reached.
+ */
+export interface Goal {
+	/** The exercise's name, as the workouts use it. */
+	exercise: string;
+	target: SetValues;
+}
+
+/** The measure a set's values imply: weight, else seconds, else reps. */
+export function measureOf(values: SetValues): Measure {
+	if (values.weight !== null) return 'weight_reps';
+	if (values.seconds !== null) return 'time';
+	return 'reps';
+}
+
 /** Formats a set's numbers for its measure, for example "60 kg × 8", "15 reps", or "45 s". */
 export function formatSet(values: SetValues, measure: Measure): string {
 	if (measure === 'time') return `${values.seconds ?? '?'} s`;
@@ -149,6 +177,7 @@ export function withDefaults(fields: Partial<ItemFields> & { title: string }): I
 		category: null,
 		shares: [],
 		exercises: [],
+		goal: null,
 		...fields
 	};
 }
@@ -192,6 +221,27 @@ export interface WorkoutView extends ItemFields {
 	createdAt: string;
 	/** ISO timestamp of when it was finished, or null. */
 	completedAt: string | null;
+}
+
+/** A goal as the Gym screen shows it, with its progress worked out on the server. */
+export interface GoalView {
+	id: string;
+	title: string;
+	details: string | null;
+	goal: Goal;
+	/** The deadline, if any. */
+	date: string | null;
+	createdAt: string;
+	/** When it was reached, or null. */
+	completedAt: string | null;
+	/** The best score before the goal was set, the best now, and the target's. */
+	start: number | null;
+	current: number | null;
+	target: number;
+	/** What the scores count: estimated max in kg, reps, or seconds. */
+	unit: string;
+	/** Weeks to reach it at the recent pace, or null without a rising trend. */
+	weeksLeft: number | null;
 }
 
 /** Something the trainer remembers, as the Gym screen shows it. */

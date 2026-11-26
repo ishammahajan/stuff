@@ -2,6 +2,8 @@
 	import { enhance } from '$app/forms';
 	import {
 		describeRepeat,
+		formatSet,
+		measureOf,
 		type Item,
 		type ItemType,
 		type OperationKind,
@@ -48,6 +50,7 @@
 			item.important ? 'Important' : '',
 			money(item),
 			exercises(item),
+			item.goal ? `${item.goal.exercise}: ${formatSet(item.goal.target, measureOf(item.goal.target))}` : '',
 			item.date,
 			item.repeat ? describeRepeat(item.repeat) : '',
 			item.remindAt ? `Reminder ${item.remindAt.replace('T', ' ')}` : '',
@@ -126,6 +129,7 @@
 	.type.income,
 	.type.workout,
 	.type.trainer_note,
+	.type.goal,
 	.type.task {
 		color: var(--accent);
 	}

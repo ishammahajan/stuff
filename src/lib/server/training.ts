@@ -1,6 +1,8 @@
 // The training summary the trainer model reads before it plans or advises: history,
 // strength per exercise, a suggested next target from a fixed progression rule,
-// recent work per muscle, upcoming and missed workouts, and the trainer's notes.
+// recent work per muscle, goals and their progress, upcoming and missed workouts,
+// and the trainer's notes. Also the progress the Gym screen charts, and which goals
+// were reached.
 // Pure code with no database or SvelteKit imports, so it can be tested on its own.
 import {
 	addDays,
@@ -8,6 +10,7 @@ import {
 	daysBetween,
 	formatSet,
 	MOVEMENT_PATTERNS,
+	measureOf,
 	MUSCLES,
 	type Exercise,
 	type ItemFields,
@@ -56,20 +59,26 @@ export function estimatedMax(values: SetValues): number | null {
 	return reps === 1 ? weight : weight * (1 + reps / 30);
 }
 
+/** A set's score for a measure: estimated max, reps, or seconds. */
+function score(values: SetValues, measure: Measure): number | null {
+	if (measure === 'weight_reps') return estimatedMax(values);
+	return measure === 'reps' ? values.reps : values.seconds;
+}
+
 /** The number that tracks progress for a measure: estimated max, best reps, or best time. */
-function bestScore(exercise: Exercise): number | null {
+function bestScore(exercise: Exercise, measure: Measure = exercise.measure): number | null {
 	let best: number | null = null;
 	for (const { done } of exercise.sets) {
 		if (!done) continue;
-		const score =
-			exercise.measure === 'weight_reps'
-				? estimatedMax(done)
-				: exercise.measure === 'reps'
-					? done.reps
-					: done.seconds;
-		if (score !== null && (best === null || score > best)) best = score;
+		const value = score(done, measure);
+		if (value !== null && (best === null || value > best)) best = value;
 	}
 	return best;
+}
+
+/** What a measure's scores count, for labels. */
+export function scoreUnit(measure: Measure): string {
+	return measure === 'weight_reps' ? 'kg est. max' : measure === 'reps' ? 'reps' : 's';
 }
 
 /** The slope of a least-squares line through the points, per day, or null with too few. */
@@ -226,6 +235,154 @@ function exerciseLine(history: Performance[], today: string): string {
 
 const label = (value: string) => value.replace(/_/g, ' ');
 
+const nameKey = (name: string) => name.trim().toLowerCase();
+
+interface Session {
+	record: TrainingRecord;
+	date: string;
+}
+
+/** Workouts that happened up to today, oldest first. */
+function sessionsOf(all: TrainingRecord[], today: string): Session[] {
+	return all
+		.filter((record) => record.type === 'workout' && performed(record))
+		.map((record) => ({ record, date: workoutDate(record) }))
+		.filter(({ date }) => date <= today)
+		.sort((a, b) => a.date.localeCompare(b.date));
+}
+
+/** Each exercise's performances, oldest first, by its name in lower case. */
+function historiesOf(sessions: Session[]): Map<string, Performance[]> {
+	const byName = new Map<string, Performance[]>();
+	for (const { record, date } of sessions) {
+		for (const exercise of record.fields.exercises) {
+			if (!exercise.sets.some((set) => set.done)) continue;
+			const key = nameKey(exercise.name);
+			byName.set(key, [...(byName.get(key) ?? []), { date, exercise }]);
+		}
+	}
+	return byName;
+}
+
+/** Done sets per muscle in the last 7 days, and the day each muscle was last trained. */
+function muscleWork(sessions: Session[], today: string) {
+	const weekStart = addDays(today, -6);
+	const sets = new Map<Muscle, number>();
+	const lastTrained = new Map<Muscle, string>();
+	for (const { record, date } of sessions) {
+		for (const exercise of record.fields.exercises) {
+			const count = exercise.sets.filter((set) => set.done).length;
+			if (count === 0) continue;
+			for (const muscle of exercise.muscles) {
+				lastTrained.set(muscle, date);
+				if (date >= weekStart) sets.set(muscle, (sets.get(muscle) ?? 0) + count);
+			}
+		}
+	}
+	return MUSCLES.map((muscle) => ({
+		muscle,
+		sets: sets.get(muscle) ?? 0,
+		lastTrained: lastTrained.get(muscle) ?? null
+	}));
+}
+
+/** One exercise's progress for a chart: its best score in each session. */
+export interface ExerciseProgress {
+	name: string;
+	measure: Measure;
+	points: { date: string; value: number }[];
+}
+
+/** Every exercise's progress, the most recently done first. */
+export function exerciseProgress(all: TrainingRecord[], today: string): ExerciseProgress[] {
+	const result: ExerciseProgress[] = [];
+	for (const history of historiesOf(sessionsOf(all, today)).values()) {
+		const last = history[history.length - 1].exercise;
+		const points = history.flatMap(({ date, exercise }) => {
+			const value = bestScore(exercise, last.measure);
+			return value === null ? [] : [{ date, value: round(value) }];
+		});
+		if (points.length > 0) result.push({ name: last.name, measure: last.measure, points });
+	}
+	return result.sort((a, b) => b.points[b.points.length - 1].date.localeCompare(a.points[a.points.length - 1].date));
+}
+
+/** A goal's numbers: scores before it was set and now, the target's, and the pace. */
+export interface GoalProgress {
+	measure: Measure;
+	start: number | null;
+	current: number | null;
+	target: number;
+	weeksLeft: number | null;
+}
+
+/** The target's own score; a weight goal of more than 12 reps still counts by Epley. */
+function targetScore(target: SetValues, measure: Measure): number {
+	if (measure === 'weight_reps') {
+		const { weight, reps } = target;
+		return (reps ?? 1) <= 1 ? (weight ?? 0) : (weight ?? 0) * (1 + (reps ?? 0) / 30);
+	}
+	return (measure === 'reps' ? target.reps : target.seconds) ?? 0;
+}
+
+/** How far a goal is, from the history of its exercise. */
+export function goalProgress(record: TrainingRecord, all: TrainingRecord[], today: string): GoalProgress | null {
+	const goal = record.fields.goal;
+	if (!goal) return null;
+	const measure = measureOf(goal.target);
+	const history = historiesOf(sessionsOf(all, today)).get(nameKey(goal.exercise)) ?? [];
+	const set = record.createdAt.toISOString().slice(0, 10);
+	const scores = history
+		.map(({ date, exercise }) => ({ date, value: bestScore(exercise, measure) }))
+		.filter((entry): entry is { date: string; value: number } => entry.value !== null);
+	const best = (entries: { value: number }[]) =>
+		entries.length ? round(Math.max(...entries.map((entry) => entry.value))) : null;
+	const target = round(targetScore(goal.target, measure));
+	const current = best(scores);
+
+	// Weeks left at the trend of the last 8 weeks, when it is rising.
+	let weeksLeft: number | null = null;
+	const since = addDays(today, -TREND_WEEKS * 7);
+	const slope = slopePerDay(
+		scores.filter((entry) => entry.date >= since).map((entry) => ({ day: daysBetween(since, entry.date), value: entry.value }))
+	);
+	if (current !== null && current < target && slope !== null && slope > 0) {
+		weeksLeft = Math.ceil((target - current) / (slope * 7));
+	}
+	return { measure, start: best(scores.filter((entry) => entry.date < set)), current, target, weeksLeft };
+}
+
+/** The open goals that a logged set has reached, on any workout, even one dated ahead. */
+export function reachedGoals(all: TrainingRecord[]): TrainingRecord[] {
+	const goals = all.filter((record) => record.type === 'goal' && !record.completedAt && record.fields.goal);
+	if (goals.length === 0) return [];
+	const histories = historiesOf(sessionsOf(all, '9999-12-31'));
+	return goals.filter((record) => {
+		const goal = record.fields.goal!;
+		return (histories.get(nameKey(goal.exercise)) ?? []).some(({ exercise }) =>
+			exercise.sets.some((set) => reached(goal.target, set.done))
+		);
+	});
+}
+
+/** One goal for the model, with its numbers. */
+function goalLine(record: TrainingRecord, all: TrainingRecord[], today: string): string {
+	const goal = record.fields.goal!;
+	const progress = goalProgress(record, all, today)!;
+	const unit = scoreUnit(progress.measure);
+	return `  ${JSON.stringify({
+		id: record.id,
+		title: record.fields.title,
+		exercise: goal.exercise,
+		target: formatSet(goal.target, progress.measure),
+		deadline: record.fields.date,
+		set: record.createdAt.toISOString().slice(0, 10),
+		...(record.completedAt ? { reached: record.completedAt.toISOString().slice(0, 10) } : {}),
+		progress: `${progress.start ?? '?'} → ${progress.current ?? '?'} of ${progress.target} ${unit}`,
+		...(progress.weeksLeft !== null ? { weeksLeftAtRecentPace: progress.weeksLeft } : {})
+	})}`;
+}
+
 /**
  * Summarizes the speaker's training as plain text for the model. `today` is their
  * local date.
@@ -233,11 +390,7 @@ const label = (value: string) => value.replace(/_/g, ' ');
 export function summarizeTraining(all: TrainingRecord[], today: string): string {
 	const workouts = all.filter((record) => record.type === 'workout');
 	const notes = all.filter((record) => record.type === 'trainer_note');
-	const sessions = workouts
-		.filter(performed)
-		.map((record) => ({ record, date: workoutDate(record) }))
-		.filter(({ date }) => date <= today)
-		.sort((a, b) => a.date.localeCompare(b.date));
+	const sessions = sessionsOf(all, today);
 
 	const lines: string[] = [`Training summary. Today is ${today}. Weights are in kg.`];
 
@@ -263,46 +416,21 @@ export function summarizeTraining(all: TrainingRecord[], today: string): string 
 		lines.push(
 			`Last 4 weeks: ${done} sessions done (${round(done / 4)} a week); planned but missed: ${missed}.`
 		);
-	}
 
-	if (sessions.length > 0) {
 		lines.push('', 'Recent sessions, newest first:');
 		for (const { record, date } of sessions.slice(-RECENT_SESSIONS).reverse()) {
 			const muscles = new Set(record.fields.exercises.flatMap((exercise) => exercise.muscles));
 			lines.push(`  ${date} ${record.fields.title}: ${[...muscles].join(', ') || 'no muscles tagged'}`);
 		}
 
-		// Hard sets in the last 7 days, and when each muscle was last trained.
-		const weekStart = addDays(today, -6);
-		const setsThisWeek = new Map<Muscle, number>();
-		const lastTrained = new Map<Muscle, string>();
-		for (const { record, date } of sessions) {
-			for (const exercise of record.fields.exercises) {
-				const count = exercise.sets.filter((set) => set.done).length;
-				if (count === 0) continue;
-				for (const muscle of exercise.muscles) {
-					lastTrained.set(muscle, date);
-					if (date >= weekStart) setsThisWeek.set(muscle, (setsThisWeek.get(muscle) ?? 0) + count);
-				}
-			}
-		}
 		lines.push('', 'Muscles: sets done in the last 7 days, and when last trained:');
-		for (const muscle of MUSCLES) {
-			const last = lastTrained.get(muscle);
-			const when = last ? `last trained ${daysBetween(last, today)} days ago` : 'never trained';
-			lines.push(`  ${muscle}: ${setsThisWeek.get(muscle) ?? 0} sets, ${when}`);
+		for (const { muscle, sets, lastTrained } of muscleWork(sessions, today)) {
+			const when = lastTrained ? `last trained ${daysBetween(lastTrained, today)} days ago` : 'never trained';
+			lines.push(`  ${muscle}: ${sets} sets, ${when}`);
 		}
 
-		// Each exercise's performances, oldest first, grouped by movement pattern.
-		const byName = new Map<string, Performance[]>();
-		for (const { record, date } of sessions) {
-			for (const exercise of record.fields.exercises) {
-				if (!exercise.sets.some((set) => set.done)) continue;
-				const key = exercise.name.trim().toLowerCase();
-				byName.set(key, [...(byName.get(key) ?? []), { date, exercise }]);
-			}
-		}
-		const histories = [...byName.values()]
+		// Each exercise's performances, grouped by movement pattern.
+		const histories = [...historiesOf(sessions).values()]
 			.sort((a, b) => b[b.length - 1].date.localeCompare(a[a.length - 1].date))
 			.slice(0, MAX_EXERCISES);
 		lines.push('', 'Exercises by movement pattern, most recent first:');
@@ -314,6 +442,14 @@ export function summarizeTraining(all: TrainingRecord[], today: string): string 
 		}
 	}
 
+	// Goals: the open ones, and those reached in the last 30 days.
+	const goals = all
+		.filter((record) => record.type === 'goal' && record.fields.goal)
+		.filter((record) => !record.completedAt || record.completedAt.toISOString().slice(0, 10) >= addDays(today, -30));
+	lines.push('', 'Goals (progress as best before the goal was set → best now, of the target):');
+	if (goals.length === 0) lines.push('  (none)');
+	for (const goal of goals) lines.push(goalLine(goal, all, today));
+
 	// Workouts still to do, and recent ones that were missed, with their IDs.
 	const open = workouts
 		.filter((record) => !performed(record))
@@ -322,7 +458,7 @@ export function summarizeTraining(all: TrainingRecord[], today: string): string 
 		.sort((a, b) => a.date.localeCompare(b.date));
 	const ahead = open.filter(({ date }) => date >= today);
 	const missed = open.filter(({ date }) => date < today);
-	const describe = ({ record, date }: { record: TrainingRecord; date: string }) =>
+	const describe = ({ record, date }: Session) =>
 		`  ${JSON.stringify({ id: record.id, date, title: record.fields.title, exercises: record.fields.exercises.map((e) => e.name) })}`;
 	lines.push('', 'Planned workouts ahead:', ...(ahead.length ? ahead.map(describe) : ['  (none)']));
 	if (missed.length) lines.push('', 'Missed in the last 2 weeks (not done):', ...missed.map(describe));
