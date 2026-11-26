@@ -1,6 +1,6 @@
 # Stuff
 
-A personal app of small utilities (tasks, knowledge, budget), opened from the iPhone
+A personal app of small utilities (tasks, knowledge, budget, gym), opened from the iPhone
 action button. Speech is the main input: the user records a voice memo, and a model
 turns it into items for the utilities. An image or a PDF can be sent too, alone or
 with a recording. Human setup steps are in `README.md`.
@@ -102,21 +102,24 @@ The parts:
    sent.
 4. Before the call, all of the user's records are loaded and decrypted
    (`loadRecords` in `src/lib/server/records.ts`). `snapshot` puts a capped list in
-   the prompt: up to 50 open tasks, and the latest 20 notes, 20 expenses, and 10
-   income records. The prompt says the list is partial. Records the user selected
+   the prompt: up to 50 open tasks, and the latest 20 notes, 20 expenses, 10
+   income records, and 8 workouts. The prompt says the list is partial. Records the user selected
    (`describeRecords`) are listed separately as what "this" or "these" means, and
    the screen leans the model toward that utility's type. The names from
    **Settings** are listed too, so the model hears and spells them right.
 5. `src/lib/server/openrouter.ts` (`interpretMemo`) sends the audio, the file (an
    image as `image_url`, a PDF as `file`), and instructions to
    `google/gemini-3.8-flash` on OpenRouter with these tools, in a loop of at most
-   six calls:
+   six calls. One call may take up to 4 minutes: planning several workouts at
+   once took up to 3 minutes of reasoning in a test.
    - `search_records` runs `searchRecords`, a keyword match over the decrypted
      records.
    - `list_records` runs `listRecords`: one type, filtered by date range, tag,
      list, or done state, up to 100.
    - `search_knowledge` runs `searchKnowledge`, a search by meaning over notes and
      the text of PDFs (see **Knowledge**).
+   - `training_summary` returns `summarizeTraining` (see **Gym**). A capture from
+     the Gym screen has the summary in its prompt already.
    - `openrouter:web_search` is a server tool. OpenRouter runs the searches inside
      a call, as many as the model wants, so they don't use up the loop. It is
      pinned to the Exa engine, because Google's own search cost about ten times
@@ -319,6 +322,48 @@ client for an answer or a tap) to place a repeating task's next date.
   statement has been imported. Cash, and settled shares paid back in cash, are
   not tracked, so the figure drifts until the next statement resets it.
 
+### Gym
+
+The model acts as a personal trainer: it plans workouts a day at a time, logs what
+was done, keeps notes for itself, and advises on programs and goals. Logging is
+tap-first, with voice for corrections.
+
+- A day's plan is a `records` row of type `workout`: a title, a date, advice in
+  `details`, and `exercises`. Each exercise has a name, a movement `pattern`, the
+  `muscles` it works, a `measure` (`weight_reps`, `reps`, or `time`), a cue in
+  `note`, and sets of `{ target, done }`. Weight is in kg: one dumbbell or
+  kettlebell, or a barbell's or machine's total. Completing a workout sets
+  `completed_at`. Any split is allowed; the model picks what fits.
+- The trainer's memory is `records` of type `trainer_note`: equipment, missing
+  machines, injuries, goals, and what it notices. The model creates, updates, and
+  deletes them, for example when a machine comes back. Goals are notes for now.
+- **The numbers are computed, not guessed.** `src/lib/server/training.ts`
+  (`summarizeTraining`, pure, no database) builds the summary the model reads:
+  - history and adherence over the last 4 weeks, and the latest 6 sessions;
+  - sets per muscle in the last 7 days, and when each muscle was last trained;
+  - per exercise, grouped by pattern: the last sets, the estimated max (Epley,
+    up to 12 reps) or best, the all-time best, a weekly trend over 8 weeks, and a
+    suggested next target (`nextTarget`);
+  - the workouts planned ahead and those missed in the last 2 weeks, and the
+    trainer notes, with IDs.
+
+  A workout counts as done once it is finished or any set was logged.
+- **Progression rule** (`nextTarget`): every target reached means more weight
+  (2.5 kg; 1 kg for isolation; 5 kg for squat and hinge), or one more rep, or 5
+  more seconds, from what was done where it beat the target. A miss repeats the
+  targets; two misses in a row back off to 90% of the weight, or to what was
+  done. With nothing planned, what was done becomes the baseline. The model takes
+  its targets from these suggestions.
+- `src/routes/gym` groups workouts in the browser: Today (open), Missed, Upcoming,
+  and Done (the latest 20). Each set row is prefilled from the target, so the
+  check logs it as planned in one tap; `+ Set` adds a set. The pencil attaches
+  that day to the pill for a voice change, such as swapping an exercise. ×
+  deletes, with an Undo. Trainer notes are listed with × (forget, with an Undo).
+- `POST /api/workouts/{id}` takes `log` (`logSet` in `records.ts`, checked
+  against the exercise name; a set index one past the end adds a set),
+  `complete`, `reopen`, and `delete`. `POST /api/trainer-notes/{id}` deletes a
+  note. Each is logged as an operation.
+
 ### Reminders
 
 iOS gives a Safari web app no push notifications, so reminders ring through a
@@ -431,6 +476,13 @@ Remove each point from this section as it lands, and describe the result in **Ma
 - **Model provider:** stay on OpenRouter. Calling Google directly, so that only
   Google receives the audio, was considered and rejected on 2026-11-18.
 - **URLs in Knowledge:** saving an article from a link was put off.
+
+### Gym, remaining parts
+
+- **Progress charts** per exercise and per muscle on the Gym screen.
+- **Tracked goals:** a goal as structured data (exercise, target, deadline), with
+  the progress toward it, instead of a trainer note.
+- **Reaching a goal:** mark the moment a goal is met.
 
 ### Budget, remaining parts
 

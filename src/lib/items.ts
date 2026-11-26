@@ -1,6 +1,6 @@
 // The things a voice capture can turn into. Shared by the server and the pages.
 
-export const ITEM_TYPES = ['task', 'note', 'expense', 'income'] as const;
+export const ITEM_TYPES = ['task', 'note', 'expense', 'income', 'workout', 'trainer_note'] as const;
 export type ItemType = (typeof ITEM_TYPES)[number];
 
 export const REPEAT_UNITS = ['day', 'week', 'month', 'year'] as const;
@@ -43,6 +43,82 @@ export interface ItemFields {
 	 * bill; only what is left after the shares counts toward the budget.
 	 */
 	shares: Share[];
+	/** A workout's exercises, in order, with planned and done sets. */
+	exercises: Exercise[];
+}
+
+/** How an exercise moves, so the trainer can swap like for like and judge balance. */
+export const MOVEMENT_PATTERNS = [
+	'horizontal_push',
+	'vertical_push',
+	'horizontal_pull',
+	'vertical_pull',
+	'squat',
+	'hinge',
+	'lunge',
+	'carry',
+	'core',
+	'isolation',
+	'conditioning'
+] as const;
+export type MovementPattern = (typeof MOVEMENT_PATTERNS)[number];
+
+export const MUSCLES = [
+	'chest',
+	'back',
+	'shoulders',
+	'biceps',
+	'triceps',
+	'forearms',
+	'core',
+	'quads',
+	'hamstrings',
+	'glutes',
+	'calves'
+] as const;
+export type Muscle = (typeof MUSCLES)[number];
+
+/** What a set of an exercise counts: weight and reps, reps alone, or seconds held. */
+export const MEASURES = ['weight_reps', 'reps', 'time'] as const;
+export type Measure = (typeof MEASURES)[number];
+
+/** One set's numbers. Weights are in kilograms; unused values are null. */
+export interface SetValues {
+	weight: number | null;
+	reps: number | null;
+	seconds: number | null;
+}
+
+/** A set: what was planned, if anything, and what was done, once logged. */
+export interface WorkoutSet {
+	target: SetValues | null;
+	done: SetValues | null;
+}
+
+export interface Exercise {
+	/** Reused exactly across workouts, so its history adds up. */
+	name: string;
+	pattern: MovementPattern;
+	muscles: Muscle[];
+	measure: Measure;
+	sets: WorkoutSet[];
+	/** The trainer's cue for it, such as "2 reps in reserve". */
+	note: string | null;
+}
+
+/** Formats a set's numbers for its measure, for example "60 kg × 8", "15 reps", or "45 s". */
+export function formatSet(values: SetValues, measure: Measure): string {
+	if (measure === 'time') return `${values.seconds ?? '?'} s`;
+	if (measure === 'reps') {
+		const reps = `${values.reps ?? '?'} reps`;
+		return values.weight ? `${reps} + ${values.weight} kg` : reps;
+	}
+	return `${values.weight ?? '?'} kg × ${values.reps ?? '?'}`;
+}
+
+/** Whether any set of a workout was logged. */
+export function anyDone(exercises: Exercise[]): boolean {
+	return exercises.some((exercise) => exercise.sets.some((set) => set.done));
 }
 
 /** One person's part of a shared expense, and whether they have paid it back. */
@@ -72,6 +148,7 @@ export function withDefaults(fields: Partial<ItemFields> & { title: string }): I
 		list: null,
 		category: null,
 		shares: [],
+		exercises: [],
 		...fields
 	};
 }
@@ -107,6 +184,22 @@ export interface NoteView extends ItemFields {
 	createdAt: string;
 	/** How many passages of a PDF's text the note holds, or 0 for a plain note. */
 	passages: number;
+}
+
+/** A workout as the Gym screen shows it. */
+export interface WorkoutView extends ItemFields {
+	id: string;
+	createdAt: string;
+	/** ISO timestamp of when it was finished, or null. */
+	completedAt: string | null;
+}
+
+/** Something the trainer remembers, as the Gym screen shows it. */
+export interface TrainerNoteView {
+	id: string;
+	title: string;
+	details: string | null;
+	createdAt: string;
 }
 
 /** A money record as the Budget screen shows it. */

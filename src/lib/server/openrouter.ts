@@ -1,9 +1,17 @@
 import { OPENROUTER_API_KEY } from '$app/env/private';
 import {
 	ITEM_TYPES,
+	MEASURES,
+	MOVEMENT_PATTERNS,
+	MUSCLES,
 	OPERATION_KINDS,
 	REPEAT_UNITS,
+	type Exercise,
 	type ItemFields,
+	type Measure,
+	type MovementPattern,
+	type Muscle,
+	type SetValues,
 	type Share,
 	type ItemType,
 	type RepeatUnit
@@ -11,8 +19,9 @@ import {
 import type { ListFilter, ProposedOperation } from './records.ts';
 
 const MODEL = 'google/gemini-3.8-flash';
-// One call can run several web searches before it replies.
-const TIMEOUT_MS = 120_000;
+// One call can run several web searches before it replies, and planning several
+// workouts at once took up to three minutes of reasoning in a test.
+const TIMEOUT_MS = 240_000;
 // Model calls per memo: record lookups, then the final filing call. Web searches run
 // inside a call on OpenRouter's side, so they don't count.
 const MAX_ROUNDS = 6;
@@ -20,6 +29,7 @@ const MAX_ROUNDS = 6;
 const SEARCH_TOOL = 'search_records';
 const LIST_TOOL = 'list_records';
 const KNOWLEDGE_TOOL = 'search_knowledge';
+const TRAINING_TOOL = 'training_summary';
 const FILE_TOOL = 'file_memo';
 
 // Exa costs about $0.007 a search. Google's own search, the default for Gemini,
@@ -30,6 +40,42 @@ const WEB_SEARCH = {
 };
 
 const nullableType = { type: ['string', 'null'], enum: [...ITEM_TYPES, null] };
+
+const SET_VALUES_SCHEMA = {
+	type: ['object', 'null'],
+	properties: {
+		weight: { type: ['number', 'null'] },
+		reps: { type: ['integer', 'null'] },
+		seconds: { type: ['integer', 'null'] }
+	},
+	required: ['weight', 'reps', 'seconds'],
+	additionalProperties: false
+};
+
+const EXERCISES_SCHEMA = {
+	type: ['array', 'null'],
+	items: {
+		type: 'object',
+		properties: {
+			name: { type: 'string' },
+			pattern: { type: 'string', enum: MOVEMENT_PATTERNS },
+			muscles: { type: 'array', items: { type: 'string', enum: MUSCLES } },
+			measure: { type: 'string', enum: MEASURES },
+			sets: {
+				type: 'array',
+				items: {
+					type: 'object',
+					properties: { target: SET_VALUES_SCHEMA, done: SET_VALUES_SCHEMA },
+					required: ['target', 'done'],
+					additionalProperties: false
+				}
+			},
+			note: { type: ['string', 'null'] }
+		},
+		required: ['name', 'pattern', 'muscles', 'measure', 'sets', 'note'],
+		additionalProperties: false
+	}
+};
 
 const OPERATIONS_SCHEMA = {
 	type: 'array',
@@ -70,7 +116,8 @@ const OPERATIONS_SCHEMA = {
 					required: ['person', 'amount', 'settled'],
 					additionalProperties: false
 				}
-			}
+			},
+			exercises: EXERCISES_SCHEMA
 		},
 		required: [
 			'action',
@@ -87,7 +134,8 @@ const OPERATIONS_SCHEMA = {
 			'remindAt',
 			'list',
 			'category',
-			'shares'
+			'shares',
+			'exercises'
 		],
 		additionalProperties: false
 	}
@@ -115,6 +163,15 @@ const TOOLS = [
 				required: ['query'],
 				additionalProperties: false
 			}
+		}
+	},
+	{
+		type: 'function',
+		function: {
+			name: TRAINING_TOOL,
+			description:
+				"Returns the speaker's training summary: history and adherence, each exercise's last sets, estimated strength, trend, and suggested next target, sets per muscle this week, planned and missed workouts with their IDs, and all trainer notes. Call it before planning workouts or answering anything about training.",
+			parameters: { type: 'object', properties: {}, additionalProperties: false }
 		}
 	},
 	{
@@ -224,6 +281,8 @@ Record types:
 - expense: money the speaker spent or owes.
 - income: money the speaker received.
 - note: anything else worth keeping, such as an idea, a fact learned, or a recommendation.
+- workout: one day's training session, planned or done. See Training below.
+- trainer_note: something you, as the speaker's trainer, remember about them. See Training below.
 
 Fields:
 - title: a short summary in the speaker's words.
@@ -238,9 +297,10 @@ Fields:
 - list: for a note, the name of the list it belongs to, such as "Movies to watch" or "Books". Use it when the speaker names a list or adds something that is one of many of a kind, such as a movie, book, restaurant, or gift idea. Put each item in its own note, never several items in one note, so each can be changed or removed alone. Reuse an existing list's exact name when one fits. To take a note out of its list, set it to an empty string. Null for other types.
 - category: for an expense, the ID of the budget category it belongs to, from the list below. Pick the closest fit by what the money was for. Use null when no category fits or there is no list. Null for other types.
 - shares: for an expense the speaker paid and is sharing with others, each other person's share: their name, the amount they owe the speaker, and settled false. Never include the speaker. Keep amount the whole bill; the speaker's own share is what is left. Work the shares out from what is said and from a photo of the bill when there is one: an even split divides the bill, including the speaker, and shares by what each person had split tax, service charge, and tip in proportion. To change shares, give the full new list, keeping settled true for anyone who has paid back. When the speaker says someone paid them back, set that person's settled to true. To remove all shares, use an empty list. Otherwise null.
-${categoriesInstructions(context.categories)}${listsInstructions(context.lists)}${namesInstructions(context.names)}${screenInstructions(context)}
+- exercises: for a workout, its exercises in order. To change any of them, give the full new list, keeping every done value as it is. Null for other types, and null on an update that doesn't change them.
+${TRAINING}${trainingInstructions(context)}${categoriesInstructions(context.categories)}${listsInstructions(context.lists)}${namesInstructions(context.names)}${screenInstructions(context)}
 Existing records:
-Below are some of the speaker's records, one JSON object per line: open tasks and the latest notes, expenses, and income. This list is partial. When the speaker refers to a record that is not listed, call ${SEARCH_TOOL} to find it. Use only IDs from this list, from the selected records, or from ${SEARCH_TOOL} and ${LIST_TOOL} results. When the speaker talks about a record that already exists, update or complete it instead of creating a duplicate.
+Below are some of the speaker's records, one JSON object per line: open tasks and the latest notes, expenses, income, and workouts. This list is partial. When the speaker refers to a record that is not listed, call ${SEARCH_TOOL} to find it. Use only IDs from this list, from the selected records, from the training summary, or from ${SEARCH_TOOL} and ${LIST_TOOL} results. When the speaker talks about a record that already exists, update or complete it instead of creating a duplicate.
 
 ${context.snapshot || '(no records yet)'}
 
@@ -263,8 +323,31 @@ const SCREEN_NAMES: Record<ItemType, string> = {
 	task: 'Tasks',
 	note: 'Knowledge',
 	expense: 'Budget',
-	income: 'Budget'
+	income: 'Budget',
+	workout: 'Gym',
+	trainer_note: 'Gym'
 };
+
+const TRAINING = `
+Training:
+You are also the speaker's personal trainer. They ask you to plan workouts ("plan my next 3 days at home", "a push day for tomorrow", "just arms and chest today"), log what they did, change a plan ("this machine isn't here", "move everything back a day"), and ask for advice ("what should my program be?", "how long until I bench 150?").
+- Before planning or advising, read the training summary: it is below when the speaker recorded on the Gym screen; otherwise call ${TRAINING_TOOL}. Base every plan on it and on the trainer notes, never on guesses about the speaker.
+- A plan is one workout record per day: type workout, date, a short title such as "Push" or "Home: full body", details with the day's advice in a sentence or two, and exercises. Create as many days as asked, on the dates asked, leaving rest days where they help recovery.
+- Any split is allowed, including unusual ones such as arms and chest only, when it serves the speaker's goal or request. Judge balance and recovery from the sets per muscle and the days since each muscle was trained.
+- Each exercise has a name, a movement pattern, the muscles it works, a measure (weight_reps for weight and reps, reps for bodyweight reps, time for holds), its sets, and an optional short cue as note. Reuse an existing exercise's exact name, so its history adds up. Planned sets set target and leave done null. Weight is in kg: for dumbbells and kettlebells, the weight of one, even when both hands hold one; for a barbell or a machine, the total.
+- Targets: use the summary's suggested next sets for exercises the speaker has done. For a new exercise, estimate from related exercises in the same pattern, conservatively, and say in note how hard it should feel, for example "stop 2 reps short of failure". Never plan around equipment the trainer notes say is missing.
+- Logging: when the speaker says what they did, such as "bench 60 for 8, 8, and 7", set done on the matching sets of that day's workout, adding sets with target null when they did more. When there is no workout for that day, create one with done set. Never mark a workout done unless the speaker says they finished.
+- Changes: to swap an exercise, update the workout with the full new exercises list, using an exercise of the same pattern and muscles that the available equipment allows. To move a day, update its date.
+- Trainer notes: create a trainer_note when the speaker asks you to remember something, or states a lasting fact: equipment at home or missing at the gym, an injury or pain, a goal, a schedule, or a preference. Also note your own observations worth keeping for next time, such as a stalled lift or a plan for the coming weeks. Title is the note in one sentence, with its date when that matters; details only when needed. When a fact changes, update or delete its note, for example delete "the gym has no hack squat" when the speaker says it is back. Keep notes few and current: merge related ones.
+- Goals are trainer notes. For a specific goal, such as a 150 kg bench, judge it against the summary's trend, remembering that progress slows as strength grows. Give an honest time range, and suggest a nearer goal when that would serve the speaker better.
+- Advice goes in answer: brief, specific to the speaker's history, with the reasoning in a sentence. You may search the web for exercise technique or research when it helps.
+`;
+
+/** The training summary in the prompt, when the speaker recorded on the Gym screen. */
+function trainingInstructions(context: FilingContext): string {
+	if (context.screen !== 'workout' && context.screen !== 'trainer_note') return '';
+	return `\n${context.training()}\nThe training summary above already holds every workout ahead, the recent history, and all trainer notes, so don't look those up again or call ${TRAINING_TOOL}. Search only for older workouts.\n`;
+}
 
 /** The speaker's budget categories, so expenses can be filed under one. */
 function categoriesInstructions(categories: { id: string; name: string }[]): string {
@@ -339,6 +422,8 @@ export interface FilingContext {
 	lists: string[];
 	/** The speaker's budget categories. */
 	categories: { id: string; name: string }[];
+	/** The training summary, for the prompt on the Gym screen and for the training tool. */
+	training: () => string;
 }
 
 export interface QuestionOption {
@@ -418,6 +503,10 @@ function cleanFields(raw: Record<string, unknown>): Partial<ItemFields> {
 		const shares = cleanShares(raw.shares);
 		if (shares) fields.shares = shares;
 	}
+	if (Array.isArray(raw.exercises)) {
+		const exercises = cleanExercises(raw.exercises);
+		if (exercises) fields.exercises = exercises;
+	}
 	if (typeof raw.repeat === 'object' && raw.repeat !== null) {
 		const { every, unit } = raw.repeat as Record<string, unknown>;
 		// Every 0 means the task stops repeating.
@@ -450,6 +539,56 @@ function cleanShares(raw: unknown[]): Share[] | null {
 	return shares;
 }
 
+const MAX_EXERCISES = 20;
+const MAX_SETS = 15;
+
+/** A number in range, or null for anything else. */
+function bounded(value: unknown, max: number, integer: boolean): number | null {
+	if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > max) return null;
+	return integer ? Math.round(value) : Math.round(value * 100) / 100;
+}
+
+function cleanSetValues(raw: unknown): SetValues | null {
+	if (typeof raw !== 'object' || raw === null) return null;
+	const { weight, reps, seconds } = raw as Record<string, unknown>;
+	const values = {
+		weight: bounded(weight, 1000, false),
+		reps: bounded(reps, 1000, true),
+		seconds: bounded(seconds, 36_000, true)
+	};
+	return values.weight === null && values.reps === null && values.seconds === null ? null : values;
+}
+
+/** Well-formed exercises, or null when any is malformed, so a bad list never replaces a good one. */
+function cleanExercises(raw: unknown[]): Exercise[] | null {
+	if (raw.length > MAX_EXERCISES) return null;
+	const exercises: Exercise[] = [];
+	for (const item of raw) {
+		if (typeof item !== 'object' || item === null) return null;
+		const { name, pattern, muscles, measure, sets, note } = item as Record<string, unknown>;
+		const title = typeof name === 'string' ? name.replace(/\s+/g, ' ').trim().slice(0, 60) : '';
+		if (!title || !MOVEMENT_PATTERNS.includes(pattern as MovementPattern)) return null;
+		if (!MEASURES.includes(measure as Measure) || !Array.isArray(sets) || sets.length > MAX_SETS) {
+			return null;
+		}
+		const worked = Array.isArray(muscles)
+			? [...new Set(muscles.filter((m): m is Muscle => MUSCLES.includes(m as Muscle)))]
+			: [];
+		exercises.push({
+			name: title,
+			pattern: pattern as MovementPattern,
+			muscles: worked,
+			measure: measure as Measure,
+			sets: sets.map((set) => {
+				const { target, done } = (typeof set === 'object' && set !== null ? set : {}) as Record<string, unknown>;
+				return { target: cleanSetValues(target), done: cleanSetValues(done) };
+			}),
+			note: typeof note === 'string' && note.trim() ? note.trim().slice(0, 200) : null
+		});
+	}
+	return exercises;
+}
+
 /** Keeps only well-formed operations, so a malformed model reply can't reach the database. */
 function parseOperations(value: unknown): ProposedOperation[] {
 	if (!Array.isArray(value)) return [];
@@ -477,7 +616,8 @@ function parseOperations(value: unknown): ProposedOperation[] {
 						remindAt: fields.remindAt ?? null,
 						list: operation.type === 'note' ? (fields.list ?? null) : null,
 						category: operation.type === 'expense' ? (fields.category ?? null) : null,
-						shares: operation.type === 'expense' ? (fields.shares ?? []) : []
+						shares: operation.type === 'expense' ? (fields.shares ?? []) : [],
+						exercises: operation.type === 'workout' ? (fields.exercises ?? []) : []
 					}
 				});
 				break;
@@ -626,6 +766,8 @@ export async function interpretMemo(memo: Memo, context: FilingContext): Promise
 			} else if (call.function.name === LIST_TOOL) {
 				const filter = parseListFilter(parseArguments(call));
 				result = filter ? context.list(filter) : { error: 'Set type to a record type.' };
+			} else if (call.function.name === TRAINING_TOOL) {
+				result = context.training();
 			} else if (call.function.name === KNOWLEDGE_TOOL) {
 				const args = parseArguments(call);
 				const query = typeof args.query === 'string' ? args.query.trim() : '';

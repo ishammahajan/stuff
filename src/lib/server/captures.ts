@@ -27,6 +27,7 @@ import {
 	type ProposedOperation,
 	type Transaction
 } from './records.ts';
+import { summarizeTraining } from './training.ts';
 import { loadSettings } from './settings.ts';
 import { keepSpeech } from './speech.ts';
 
@@ -333,6 +334,7 @@ async function interpretCapture(account: Account, id: string): Promise<void> {
 			search: (query, type) => searchRecords(all, query, type),
 			searchKnowledge: (query) => searchKnowledge(account, all, query, (note) => summary(note)),
 			list: (filter) => listRecords(all, filter),
+			training: () => summarizeTraining(all, body.localDate),
 			reply,
 			screen: body.screen ?? null,
 			selected: describeRecords(all, body.items ?? [])

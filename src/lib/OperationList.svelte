@@ -1,6 +1,12 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
-	import { describeRepeat, type Item, type OperationKind, type OperationView } from './items.ts';
+	import {
+		describeRepeat,
+		type Item,
+		type ItemType,
+		type OperationKind,
+		type OperationView
+	} from './items.ts';
 
 	interface Props {
 		operations: OperationView[];
@@ -18,6 +24,16 @@
 		delete: 'Deleted'
 	};
 
+	const LABELS: Partial<Record<ItemType, string>> = { trainer_note: 'trainer' };
+
+	function exercises(item: Item): string {
+		const count = item.exercises.length;
+		if (count === 0) return '';
+		const sets = item.exercises.reduce((sum, e) => sum + e.sets.filter((set) => set.done).length, 0);
+		const logged = sets > 0 ? `, ${sets} ${sets === 1 ? 'set' : 'sets'} logged` : '';
+		return `${count} ${count === 1 ? 'exercise' : 'exercises'}${logged}`;
+	}
+
 	function money(item: Item): string {
 		if (item.amount === null) return '';
 		return item.currency ? `${item.amount} ${item.currency}` : String(item.amount);
@@ -31,6 +47,7 @@
 			item.list ? `In ${item.list}` : '',
 			item.important ? 'Important' : '',
 			money(item),
+			exercises(item),
 			item.date,
 			item.repeat ? describeRepeat(item.repeat) : '',
 			item.remindAt ? `Reminder ${item.remindAt.replace('T', ' ')}` : '',
@@ -45,7 +62,7 @@
 	{#each operations as operation (operation.id)}
 		{@const item = operation.item}
 		<li class:undone={operation.undone}>
-			<span class="type {item.type}">{item.type}</span>
+			<span class="type {item.type}">{LABELS[item.type] ?? item.type}</span>
 			<div class="body">
 				<span class="title">
 					<span class="verb">{VERBS[operation.kind]}:</span>
@@ -107,6 +124,8 @@
 	}
 
 	.type.income,
+	.type.workout,
+	.type.trainer_note,
 	.type.task {
 		color: var(--accent);
 	}

@@ -9,8 +9,10 @@ import {
 	withDefaults,
 	type Item,
 	type ItemFields,
+	type Exercise,
 	type ItemType,
 	type OperationKind,
+	type SetValues,
 	type OperationView,
 	type TaskView
 } from '../items.ts';
@@ -124,7 +126,36 @@ export async function loadRecords(account: Account): Promise<StoredRecord[]> {
 }
 
 /** How many records of each type the model sees up front. */
-const SNAPSHOT_LIMITS: Record<ItemType, number> = { task: 50, note: 20, expense: 20, income: 10 };
+// Trainer notes go in the training summary instead, with all of them.
+const SNAPSHOT_LIMITS: Record<ItemType, number> = {
+	task: 50,
+	note: 20,
+	expense: 20,
+	income: 10,
+	workout: 8,
+	trainer_note: 0
+};
+
+/** Drops a set's null values, to keep the model's view short. */
+function compactValues(values: SetValues | null) {
+	if (!values) return null;
+	return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== null));
+}
+
+/** A workout's exercises for the model, without empty fields. */
+export function compactExercises(exercises: Exercise[]) {
+	return exercises.map(({ name, pattern, muscles, measure, sets, note }) => ({
+		name,
+		pattern,
+		muscles,
+		measure,
+		sets: sets.map(({ target, done }) => ({
+			target: compactValues(target),
+			done: compactValues(done)
+		})),
+		...(note ? { note } : {})
+	}));
+}
 
 /** A short form of a record for the model. Empty fields are left out. */
 export function summary(record: StoredRecord, detailsLimit?: number) {
@@ -140,7 +171,8 @@ export function summary(record: StoredRecord, detailsLimit?: number) {
 		remindAt,
 		list,
 		category,
-		shares
+		shares,
+		exercises
 	} = record.fields;
 	return {
 		id: record.id,
@@ -157,6 +189,7 @@ export function summary(record: StoredRecord, detailsLimit?: number) {
 		...(list ? { list } : {}),
 		...(category ? { category } : {}),
 		...(shares.length ? { shares } : {}),
+		...(exercises.length ? { exercises: compactExercises(exercises) } : {}),
 		...(record.completedAt ? { completed: true } : {})
 	};
 }
@@ -198,8 +231,9 @@ export function searchRecords(all: StoredRecord[], query: string, type: ItemType
 	return all
 		.filter((record) => type === null || record.type === type)
 		.map((record) => {
-			const { title, details, amount, date, tags, list } = record.fields;
-			const text = [title, details, amount, date, list, ...tags].join(' ').toLowerCase();
+			const { title, details, amount, date, tags, list, exercises } = record.fields;
+			const names = exercises.map((exercise) => exercise.name);
+			const text = [title, details, amount, date, list, ...tags, ...names].join(' ').toLowerCase();
 			return { record, score: words.filter((word) => text.includes(word)).length };
 		})
 		.filter(({ score }) => score > 0)
@@ -288,12 +322,9 @@ export async function applyOperations(
 			const [row] = await tx.select().from(records).where(ownedRecord(account, id)).limit(1);
 			if (!row) continue;
 			before = toState(decryptRecord(account, row));
-			if (operation.action === 'complete' && (before.type !== 'task' || before.completedAt)) {
-				continue;
-			}
-			if (operation.action === 'reopen' && (before.type !== 'task' || !before.completedAt)) {
-				continue;
-			}
+			const completable = before.type === 'task' || before.type === 'workout';
+			if (operation.action === 'complete' && (!completable || before.completedAt)) continue;
+			if (operation.action === 'reopen' && (!completable || !before.completedAt)) continue;
 		}
 
 		let after: RecordState | null;
@@ -394,6 +425,15 @@ export async function listNotes(account: Account): Promise<StoredRecord[]> {
 		.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 }
 
+/** Lists the account's records of the given types. */
+export async function listOfTypes(account: Account, types: ItemType[]): Promise<StoredRecord[]> {
+	const rows = await db
+		.select()
+		.from(records)
+		.where(and(eq(records.userId, account.id), inArray(records.type, types)));
+	return rows.map((row) => decryptRecord(account, row));
+}
+
 /** Lists the account's expenses and income. */
 export async function listMoney(account: Account): Promise<StoredRecord[]> {
 	const rows = await db
@@ -449,6 +489,42 @@ export async function settleShare(
 		const share = shares[index];
 		if (!share || share.person !== person || share.settled) return null;
 		const changes = { shares: shares.map((s, i) => (i === index ? { ...s, settled: true } : s)) };
+		const [operationId] = await applyOperations(tx, account, null, [{ action: 'update', id, changes }], today);
+		return operationId ?? null;
+	});
+}
+
+/**
+ * Logs one set of a workout from a tap: `done` records what was done, and null clears
+ * it. A set index one past the end adds a set with no target. The exercise is found
+ * by its place and checked by its name, so a workout the trainer changed meanwhile
+ * isn't logged by mistake. Returns the logged operation's ID, or null when the
+ * workout, the exercise, or the set is gone.
+ */
+export async function logSet(
+	account: Account,
+	id: string,
+	exerciseIndex: number,
+	name: string,
+	setIndex: number,
+	done: SetValues | null,
+	today: string
+): Promise<string | null> {
+	if (!UUID.test(id)) return null;
+	return db.transaction(async (tx) => {
+		const [row] = await tx.select().from(records).where(ownedRecord(account, id)).limit(1);
+		if (row?.type !== 'workout') return null;
+		const { exercises } = decryptRecord(account, row).fields;
+		const exercise = exercises[exerciseIndex];
+		if (!exercise || exercise.name !== name || setIndex > exercise.sets.length) return null;
+		if (setIndex === exercise.sets.length && !done) return null;
+		const sets =
+			setIndex === exercise.sets.length
+				? [...exercise.sets, { target: null, done }]
+				: exercise.sets.map((set, i) => (i === setIndex ? { ...set, done } : set));
+		const changes = {
+			exercises: exercises.map((e, i) => (i === exerciseIndex ? { ...e, sets } : e))
+		};
 		const [operationId] = await applyOperations(tx, account, null, [{ action: 'update', id, changes }], today);
 		return operationId ?? null;
 	});
